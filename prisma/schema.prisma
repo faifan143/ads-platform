@@ -1,0 +1,124 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Admin {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Interest {
+  id             String    @id @default(uuid())
+  name           String    @unique
+  targetedGender Gender?
+  minAge         Int
+  maxAge         Int
+  contents       Content[] @relation("InterestContent")
+  users          User[]    @relation("UserInterest")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model User {
+  id              String            @id @default(uuid())
+  name            String
+  phone           String            @unique
+  email           String            @unique
+  password        String
+  dateOfBirth     DateTime
+  gender          Gender
+  providence      Providence
+  adsPerMonth     Int               @default(0)
+  points          Int               @default(0)
+  viewedAds       UserContent[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  ProductPurchase ProductPurchase[]
+  interests       Interest[]        @relation("UserInterest")
+}
+
+model Product {
+  id              String            @id @default(uuid())
+  name            String
+  photo           String
+  details         String
+  pointsPrice     Int
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  ProductPurchase ProductPurchase[]
+  purchasable     Boolean           @default(true)
+}
+
+model Content {
+  id                String        @id @default(uuid())
+  title             String
+  description       String
+  owner             String
+  type              AdType
+  intervalHours     Int
+  endValidationDate DateTime
+  likes             Int           @default(0)
+  mediaUrls         String[]
+  interests         Interest[]    @relation("InterestContent")
+  viewedBy          UserContent[]
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+}
+
+model UserContent {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  content   Content  @relation(fields: [contentId], references: [id])
+  contentId String
+  viewedAt  DateTime @default(now())
+
+  @@unique([userId, contentId])
+}
+
+model ProductPurchase {
+  id          String   @id @default(uuid())
+  userId      String
+  productId   String
+  pointsSpent Int
+  purchasedAt DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+  product     Product  @relation(fields: [productId], references: [id])
+
+  @@unique([userId, id])
+  @@index([userId])
+  @@index([productId])
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum AdType {
+  STORY
+  REEL
+}
+
+enum Providence {
+  ALEPPO
+  IDLIB
+  LATAKIA
+  TARTOUS
+  HOMS
+  HAMA
+  DAMASCUS
+  DARAA
+  SUWAYDA
+  QUNEITRA
+  RAQQAH
+}
