@@ -8,6 +8,7 @@ import { InterestModule } from './interest/interest.module';
 import { ProductModule } from './product/product.module';
 import { ContentModule } from './content/content.module';
 import { UserModule } from './user/user.module';
+import { FileManagementModule } from './file-management/file-management.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { UserModule } from './user/user.module';
     ProductModule,
     ContentModule,
     UserModule,
+    FileManagementModule,
   ],
   controllers: [AppController],
   providers: [AppService],
