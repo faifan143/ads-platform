@@ -28,11 +28,7 @@ export class AuthController {
   ) {
     try {
       const user = await this.authService.signUp(dto);
-      const token = await this.authService.generateToken(
-        user.id,
-        user.email,
-        user.phone,
-      );
+      const token = await this.authService.generateToken(user.id, user.phone);
 
       res.cookie('token', token, {
         httpOnly: true,

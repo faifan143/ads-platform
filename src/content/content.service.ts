@@ -159,6 +159,9 @@ export class ContentService {
       },
       include: {
         interests: true,
+        likedBy: true,
+        viewedBy: true,
+        whatsappedBy: true,
       },
       orderBy: {
         createdAt: 'desc',

@@ -112,7 +112,6 @@ async function seedUsers() {
     {
       name: 'Ahmad Al-Hassan',
       phone: '+963934567890',
-      email: 'ahmad@example.com',
       dateOfBirth: new Date('1990-05-15'),
       gender: Gender.MALE,
       providence: Providence.ALEPPO,
@@ -121,7 +120,6 @@ async function seedUsers() {
     {
       name: 'Fatima Khaled',
       phone: '+963945678901',
-      email: 'fatima@example.com',
       dateOfBirth: new Date('1995-03-20'),
       gender: Gender.FEMALE,
       providence: Providence.DAMASCUS,
@@ -130,7 +128,6 @@ async function seedUsers() {
     {
       name: 'Mohammed Said',
       phone: '+963956789012',
-      email: 'mohammed@example.com',
       dateOfBirth: new Date('1988-08-10'),
       gender: Gender.MALE,
       providence: Providence.HOMS,

@@ -32,10 +32,7 @@ export class AuthService {
         );
       }
       const hashedPassword = await bcrypt.hash(dto.password, 10);
-      // Validate interestIds
-      if (!dto.interestIds || dto.interestIds.length === 0) {
-        throw new BadRequestException('At least one interest must be selected');
-      }
+
       // Validate providence
       if (!Object.values(Providence).includes(dto.providence as Providence)) {
         throw new BadRequestException('Invalid providence value');
@@ -63,23 +60,35 @@ export class AuthService {
       // Set time to noon UTC to avoid timezone issues
       dateOfBirth.setUTCHours(12, 0, 0, 0);
 
+      let interests = [];
+      if (!dto.interestIds || dto.interestIds.length == 0) {
+        interests = await this.prisma.interest.findMany({
+          select: {
+            id: true,
+          },
+        });
+        interests = interests.map((item) => item.id);
+        console.log('all interest : ', interests);
+      } else {
+        interests = dto.interestIds;
+        console.log('only interest : ', interests);
+      }
+
       const user = await this.prisma.user.create({
         data: {
           name: dto.name,
-          email: dto.email,
           phone: dto.phone,
           password: hashedPassword,
           dateOfBirth,
           gender: dto.gender,
           providence: dto.providence,
           interests: {
-            connect: dto.interestIds.map((id) => ({ id })),
+            connect: interests.map((id) => ({ id })),
           },
         },
         select: {
           id: true,
           name: true,
-          email: true,
           phone: true,
           dateOfBirth: true,
           gender: true,
@@ -113,7 +122,12 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { phone: dto.phone },
       include: {
-        interests: true,
+        interests: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
       },
     });
 
@@ -127,14 +141,11 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const token = await this.generateToken(user.id, user.email, user.phone);
+    const token = await this.generateToken(user.id, user.phone);
     return { token, user };
   }
 
-  async generateToken(userId: string, email: string, phone: string) {
-    return this.jwtService.sign(
-      { sub: userId, email, phone },
-      { expiresIn: '7d' },
-    );
+  async generateToken(userId: string, phone: string) {
+    return this.jwtService.sign({ sub: userId, phone }, { expiresIn: '7d' });
   }
 }

@@ -2,7 +2,6 @@
 import { Gender, Providence } from '@prisma/client';
 import {
   IsArray,
-  IsEmail,
   IsEnum,
   IsOptional,
   IsString,
@@ -21,12 +20,6 @@ export class SignUpDto {
       'Phone number must start with 09 followed by 8 digits (e.g., 0912345678)',
   })
   phone: string;
-
-  @IsEmail({}, { message: 'Invalid email format' })
-  @Matches(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/, {
-    message: 'Invalid email format',
-  })
-  email: string;
 
   @IsString()
   @MinLength(8)
@@ -52,6 +45,7 @@ export class SignUpDto {
   @IsEnum(Providence)
   providence: Providence;
 
+  @IsOptional()
   @IsArray()
   @IsUUID('4', { each: true })
   interestIds: string[];
