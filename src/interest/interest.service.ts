@@ -56,6 +56,14 @@ export class InterestService {
   async findAll() {
     return this.prisma.interest.findMany();
   }
+  async findAllInList() {
+    return this.prisma.interest.findMany({
+      select: {
+        id: true,
+        name: true,
+      },
+    });
+  }
 
   async findById(id: string) {
     const interest = await this.prisma.interest.findUnique({

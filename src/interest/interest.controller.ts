@@ -13,7 +13,6 @@ import { CreateInterestDto, UpdateInterestDto } from './dtos/interest.dto';
 import { InterestService } from './interest.service';
 
 @Controller('interests')
-// @UseGuards(JwtAuthGuard)
 export class InterestController {
   constructor(private interestService: InterestService) {}
 
@@ -25,6 +24,10 @@ export class InterestController {
   @Get()
   findAll() {
     return this.interestService.findAll();
+  }
+  @Get('list')
+  findAllInList() {
+    return this.interestService.findAllInList();
   }
 
   @Get('id/:id')
