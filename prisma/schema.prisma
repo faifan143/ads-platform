@@ -60,28 +60,6 @@ model Product {
   purchasable     Boolean           @default(true)
 }
 
-model UserContentLike {
-  id        String   @id @default(uuid())
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
-  content   Content  @relation(fields: [contentId], references: [id])
-  contentId String
-  likedAt   DateTime @default(now())
-
-  @@unique([userId, contentId])
-}
-
-model UserContentWhatsApp {
-  id           String   @id @default(uuid())
-  user         User     @relation(fields: [userId], references: [id])
-  userId       String
-  content      Content  @relation(fields: [contentId], references: [id])
-  contentId    String
-  whatsappedAt DateTime @default(now())
-
-  @@unique([userId, contentId])
-}
-
 model Content {
   id                String                @id @default(uuid())
   title             String
@@ -100,11 +78,33 @@ model Content {
   updatedAt         DateTime              @updatedAt
 }
 
+model UserContentLike {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  contentId String
+  likedAt   DateTime @default(now())
+
+  @@unique([userId, contentId])
+}
+
+model UserContentWhatsApp {
+  id           String   @id @default(uuid())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  content      Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  contentId    String
+  whatsappedAt DateTime @default(now())
+
+  @@unique([userId, contentId])
+}
+
 model UserContent {
   id        String   @id @default(uuid())
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId    String
-  content   Content  @relation(fields: [contentId], references: [id])
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
   contentId String
   viewedAt  DateTime @default(now())
 

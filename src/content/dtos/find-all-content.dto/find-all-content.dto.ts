@@ -1,5 +1,5 @@
 import { AdType } from '@prisma/client';
-import { IsEnum, IsOptional, IsString, IsPhoneNumber } from 'class-validator';
+import { IsEnum, IsOptional, IsString, Matches } from 'class-validator';
 
 export class FindAllContentDto {
   @IsOptional()
@@ -7,7 +7,7 @@ export class FindAllContentDto {
   ownerName?: string;
 
   @IsOptional()
-  @IsPhoneNumber()
+  @Matches(/^09\d{8}$/)
   ownerNumber?: string;
 
   @IsOptional()

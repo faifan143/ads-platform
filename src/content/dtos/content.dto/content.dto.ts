@@ -7,9 +7,10 @@ import {
   IsInt,
   IsNotEmpty,
   IsString,
+  IsUrl,
   IsUUID,
+  Matches,
   Min,
-  IsPhoneNumber,
 } from 'class-validator';
 
 export class ContentDto {
@@ -26,7 +27,9 @@ export class ContentDto {
   ownerName: string;
 
   @IsNotEmpty()
-  @IsPhoneNumber()
+  @Matches(/^09\d{8}$/, {
+    message: 'Phone number must be in Syrian format (09XXXXXXXX)',
+  })
   ownerNumber: string;
 
   @IsNotEmpty()
@@ -45,6 +48,7 @@ export class ContentDto {
 
   @IsArray()
   @IsString({ each: true })
+  @IsUrl({}, { each: true })
   mediaUrls: string[];
 
   @IsArray()

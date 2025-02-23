@@ -1,93 +1,153 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+REM Set variables for testing
+set "API_URL=http://localhost:8000"
+set "COOKIE_FILE=cookies.txt"
+
+REM Generate timestamp for unique names
+for /f "tokens=2-4 delims=/ " %%a in ('echo %date%') do (
+    set "date_stamp=%%c%%a%%b"
+)
+for /f "tokens=1-4 delims=:,." %%a in ('echo %time%') do (
+    set "time_stamp=%%a%%b%%c%%d"
+)
+
+REM Save test credentials for reuse
+set "TEST_EMAIL=test!time_stamp!@example.com"
+set "TEST_PASSWORD=P@ssword123"
+
 echo ===================================================
 echo CONTENT MODULE STRESS TEST
 echo ===================================================
-echo.
+
+echo === 1. Setup: Create Test Interests ===
+echo Creating interest 1...
+curl -s -X POST "%API_URL%/interests" -H "Content-Type: application/json" -d "{\"name\": \"Test Interest 1 !date_stamp!!time_stamp!\", \"targetedGender\": \"MALE\", \"minAge\": 13, \"maxAge\": 65}" > interest1.json
+type interest1.json
 echo.
 
-REM Check if curl is available
-where curl >nul 2>nul
-if %errorlevel% neq 0 (
-    echo ❌ Error: CURL is not installed or not in PATH.
-    exit /b 1
+REM Extract interest ID
+for /f "tokens=2 delims=:," %%i in ('findstr "\"id\":" interest1.json') do (
+    set "ID1=%%i"
+    set "ID1=!ID1:"=!"
+    set "ID1=!ID1: =!"
 )
+echo Interest ID: !ID1!
 
-REM Set variables for testing
-set "API_URL=http://localhost:8000"
-set COOKIE_FILE=cookies.txt
-
-REM === 0. CREATE TEST CONTENT ===
-echo Creating test content 1...
+echo === 2. Setup: Create and Sign In Test User ===
+echo Creating test user...
+curl -s -X POST "%API_URL%/auth/signup" -H "Content-Type: application/json" -d "{\"name\": \"Test User\", \"email\": \"!TEST_EMAIL!\", \"phone\": \"0912345678\", \"password\": \"!TEST_PASSWORD!\", \"dateOfBirth\": \"2000-01-01\", \"gender\": \"MALE\", \"providence\": \"ALEPPO\", \"interestIds\": [\"!ID1!\"]}" > user.json
+type user.json
 echo.
-echo {"title":"Ad 1","description":"First test ad","owner":"PLACEHOLDER_OWNER_ID","type":"IMAGE","intervalHours":6,"endValidationDate":"2025-12-31","mediaUrls":["https://example.com/image1.jpg"],"interestIds":["PLACEHOLDER_ID1"]} > content1_template.json
 
-REM Replace placeholders with actual IDs
-powershell -Command "(Get-Content content1_template.json).replace('PLACEHOLDER_OWNER_ID','OWNER_ID').replace('PLACEHOLDER_ID1','INTEREST_ID_1')" > content1.json
-type content1.json
+echo Signing in...
+curl -s -X POST "%API_URL%/auth/signin" -H "Content-Type: application/json" -d "{\"phone\": \"0912345678\", \"password\": \"!TEST_PASSWORD!\"}" -c %COOKIE_FILE%
+echo.
 
-curl -s -X POST "%API_URL%/content" -H "Content-Type: application/json" -d @content1.json > content1_response.json
-type content1_response.json
+echo === 3. Testing Content Creation ===
+echo Test 3.1: Create Valid Content
+curl -s -w "\nStatus: %%{http_code}\n" -X POST "%API_URL%/content" -H "Content-Type: application/json" -b %COOKIE_FILE% -d "{\"title\": \"Test Content !time_stamp!\", \"description\": \"Test Description\", \"ownerName\": \"Test Owner\", \"ownerNumber\": \"0912345678\", \"type\": \"STORY\", \"intervalHours\": 24, \"endValidationDate\": \"2025-12-31\", \"mediaUrls\": [\"https://example.com/image1.jpg\"], \"interestIds\": [\"!ID1!\"]}" > content.json
+type content.json
+echo.
 
-for /f "tokens=2 delims=:," %%i in ('findstr "\"id\":" content1_response.json') do (
-    set "CONTENT_ID1=%%i"
-    set "CONTENT_ID1=!CONTENT_ID1:"=!"
-    set "CONTENT_ID1=!CONTENT_ID1: =!"
+REM Extract content ID
+for /f "tokens=2 delims=:," %%i in ('findstr "\"id\":" content.json') do (
+    set "CONTENT_ID=%%i"
+    set "CONTENT_ID=!CONTENT_ID:"=!"
+    set "CONTENT_ID=!CONTENT_ID: =!"
 )
-echo Content 1 ID: !CONTENT_ID1!
-echo.
+echo Content ID: !CONTENT_ID!
+
+echo === 4. Testing Content Retrieval ===
+echo Test 4.1: Get All Content
+curl -s -w "\nStatus: %%{http_code}\n" -X GET "%API_URL%/content" -b %COOKIE_FILE%
 echo.
 
-REM === 1. GET ALL CONTENT ===
-echo Getting all content...
-curl -s -w "\n" -X GET "%API_URL%/content"
-echo.
+echo Test 4.2: Get Content by ID
+curl -s -w "\nStatus: %%{http_code}\n" -X GET "%API_URL%/content/!CONTENT_ID!" -b %COOKIE_FILE%
 echo.
 
-REM === 2. GET SINGLE CONTENT ===
-echo Getting content by ID...
-curl -s -w "\n" -X GET "%API_URL%/content/!CONTENT_ID1!"
-echo.
+echo Test 4.3: Get Relevant Content
+curl -s -w "\nStatus: %%{http_code}\n" -X GET "%API_URL%/content/user/relevant" -b %COOKIE_FILE%
 echo.
 
-REM === 3. UPDATE CONTENT ===
-echo Updating content 1...
-echo.
-echo {"title":"Updated Ad 1","description":"Updated test ad"} > update_content1.json
-curl -s -w "\n" -X PATCH "%API_URL%/content/!CONTENT_ID1!" -H "Content-Type: application/json" -d @update_content1.json
-echo.
+echo === 5. Testing Content Interactions ===
+echo Test 5.1: Mark Content as Viewed
+curl -s -w "\nStatus: %%{http_code}\n" -X POST "%API_URL%/content/!CONTENT_ID!/view" -b %COOKIE_FILE%
 echo.
 
-REM === 4. DELETE CONTENT ===
-echo Deleting content 1...
-curl -s -w "\n" -X DELETE "%API_URL%/content/!CONTENT_ID1!"
-echo.
+echo Test 5.2: Like Content
+curl -s -w "\nStatus: %%{http_code}\n" -X POST "%API_URL%/content/!CONTENT_ID!/like" -b %COOKIE_FILE%
 echo.
 
-REM === 5. EDGE CASE TESTS ===
-echo Testing with missing title...
-echo.
-echo {"description":"Missing title","owner":"OWNER_ID","type":"IMAGE","intervalHours":6,"endValidationDate":"2025-12-31","mediaUrls":["https://example.com/image1.jpg"],"interestIds":["INTEREST_ID_1"]} > content_invalid.json
-curl -s -w "\n" -X POST "%API_URL%/content" -H "Content-Type: application/json" -d @content_invalid.json
-echo.
+echo Test 5.3: Get WhatsApp Link
+curl -s -w "\nStatus: %%{http_code}\n" -X GET "%API_URL%/content/!CONTENT_ID!/whatsapp" -b %COOKIE_FILE%
 echo.
 
-REM === 6. CLEANUP ===
+echo === 6. Testing Content Updates ===
+echo Test 6.1: Update Content
+curl -s -w "\nStatus: %%{http_code}\n" -X PATCH "%API_URL%/content/!CONTENT_ID!" -H "Content-Type: application/json" -b %COOKIE_FILE% -d "{\"title\": \"Updated Content !time_stamp!\", \"intervalHours\": 48}"
 echo.
+
+echo === 7. Testing Filter and Search ===
+echo Test 7.1: Filter by Type
+curl -s -w "\nStatus: %%{http_code}\n" -X GET "%API_URL%/content?type=STORY" -b %COOKIE_FILE%
 echo.
+
+echo Test 7.2: Filter by Interest
+curl -s -w "\nStatus: %%{http_code}\n" -X GET "%API_URL%/content?interestId=!ID1!" -b %COOKIE_FILE%
+echo.
+
+echo === 8. Testing Error Cases ===
+echo Test 8.1: Create Content with Invalid Type
+curl -s -w "\nStatus: %%{http_code}\n" -X POST "%API_URL%/content" -H "Content-Type: application/json" -b %COOKIE_FILE% -d "{\"title\": \"Invalid Type\", \"description\": \"Test\", \"ownerName\": \"Test Owner\", \"ownerNumber\": \"0912345678\", \"type\": \"INVALID\", \"intervalHours\": 24, \"endValidationDate\": \"2025-12-31\", \"mediaUrls\": [], \"interestIds\": [\"!ID1!\"]}"
+echo.
+
+echo Test 8.2: Get Non-existent Content
+curl -s -w "\nStatus: %%{http_code}\n" -X GET "%API_URL%/content/00000000-0000-0000-0000-000000000000" -b %COOKIE_FILE%
+echo.
+
+echo Test 8.3: Test Unauthorized Access
+set "TEMP_COOKIE=%COOKIE_FILE%.bak"
+move /y %COOKIE_FILE% %TEMP_COOKIE% >nul 2>&1
+curl -s -w "\nStatus: %%{http_code}\n" -X POST "%API_URL%/content/!CONTENT_ID!/like"
+move /y %TEMP_COOKIE% %COOKIE_FILE% >nul 2>&1
+echo.
+
+echo === 9. Testing Delete and Cascade ===
+echo Test 9.1: Delete Content
+curl -s -w "\nStatus: %%{http_code}\n" -X DELETE "%API_URL%/content/!CONTENT_ID!" -b %COOKIE_FILE%
+echo.
+
+echo Test 9.2: Verify Deletion ^(should return 404^)
+curl -s -w "\nStatus: %%{http_code}\n" -X GET "%API_URL%/content/!CONTENT_ID!" -b %COOKIE_FILE%
+echo.
+
+echo Test 9.3: Verify Cascade ^(likes, views should be gone^)
+curl -s -w "\nStatus: %%{http_code}\n" -X POST "%API_URL%/content/!CONTENT_ID!/like" -b %COOKIE_FILE%
+echo.
+
+echo === 10. Testing Final Error Cases ===
+echo Test 10.1: Try to update deleted content
+curl -s -w "\nStatus: %%{http_code}\n" -X PATCH "%API_URL%/content/!CONTENT_ID!" -H "Content-Type: application/json" -b %COOKIE_FILE% -d "{\"title\": \"Should Fail\"}"
+echo.
+
+echo === 11. Cleanup ===
 echo Deleting temporary files...
-del /q content*_template.json 2>nul
-del /q content*.json 2>nul
-del /q content*_response.json 2>nul
+del /q interest*.json user.json content.json %COOKIE_FILE% 2>nul
 
 echo ===================================================
-echo STRESS TEST COMPLETED
+echo TEST COMPLETED
 echo ===================================================
 echo.
-echo.
-echo ✅ If no errors were encountered, your CONTENT API is robust!
-echo.
-echo.
+echo Status Code Summary:
+echo - 201: Expected for successful creation
+echo - 200: Expected for successful operations
+echo - 400: Expected for invalid input
+echo - 401: Expected for unauthorized access
+echo - 404: Expected for not found resources
+echo ===================================================
+
 pause
 endlocal
