@@ -28,7 +28,11 @@ export class AuthController {
   ) {
     try {
       const user = await this.authService.signUp(dto);
-      const token = await this.authService.generateToken(user.id, user.email);
+      const token = await this.authService.generateToken(
+        user.id,
+        user.email,
+        user.phone,
+      );
 
       res.cookie('token', token, {
         httpOnly: true,
@@ -53,14 +57,14 @@ export class AuthController {
     @Body() dto: SignInDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { token } = await this.authService.signIn(dto);
+    const { token, user } = await this.authService.signIn(dto);
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
-    return { message: 'Signed in successfully' };
+    return { message: 'Signed in successfully', data: { ...user } };
   }
 
   @Post('signout')

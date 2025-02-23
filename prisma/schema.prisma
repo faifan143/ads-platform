@@ -29,21 +29,23 @@ model Interest {
 }
 
 model User {
-  id              String            @id @default(uuid())
-  name            String
-  phone           String            @unique
-  email           String            @unique
-  password        String
-  dateOfBirth     DateTime
-  gender          Gender
-  providence      Providence
-  adsPerMonth     Int               @default(0)
-  points          Int               @default(0)
-  viewedAds       UserContent[]
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  ProductPurchase ProductPurchase[]
-  interests       Interest[]        @relation("UserInterest")
+  id                  String                @id @default(uuid())
+  name                String
+  phone               String                @unique
+  email               String                @unique
+  password            String
+  dateOfBirth         DateTime
+  gender              Gender
+  providence          Providence
+  adsPerMonth         Int                   @default(0)
+  points              Int                   @default(0)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  viewedAds           UserContent[]
+  ProductPurchase     ProductPurchase[]
+  interests           Interest[]            @relation("UserInterest")
+  UserContentLike     UserContentLike[]
+  UserContentWhatsApp UserContentWhatsApp[]
 }
 
 model Product {
@@ -58,20 +60,44 @@ model Product {
   purchasable     Boolean           @default(true)
 }
 
+model UserContentLike {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  content   Content  @relation(fields: [contentId], references: [id])
+  contentId String
+  likedAt   DateTime @default(now())
+
+  @@unique([userId, contentId])
+}
+
+model UserContentWhatsApp {
+  id           String   @id @default(uuid())
+  user         User     @relation(fields: [userId], references: [id])
+  userId       String
+  content      Content  @relation(fields: [contentId], references: [id])
+  contentId    String
+  whatsappedAt DateTime @default(now())
+
+  @@unique([userId, contentId])
+}
+
 model Content {
-  id                String        @id @default(uuid())
+  id                String                @id @default(uuid())
   title             String
   description       String
-  owner             String
+  ownerName         String
+  ownerNumber       String
   type              AdType
   intervalHours     Int
   endValidationDate DateTime
-  likes             Int           @default(0)
   mediaUrls         String[]
-  interests         Interest[]    @relation("InterestContent")
+  interests         Interest[]            @relation("InterestContent")
   viewedBy          UserContent[]
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  likedBy           UserContentLike[]
+  whatsappedBy      UserContentWhatsApp[]
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
 }
 
 model UserContent {

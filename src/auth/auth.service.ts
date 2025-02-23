@@ -111,7 +111,10 @@ export class AuthService {
   }
   async signIn(dto: SignInDto) {
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: { phone: dto.phone },
+      include: {
+        interests: true,
+      },
     });
 
     if (!user) {
@@ -124,11 +127,14 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const token = await this.generateToken(user.id, user.email);
-    return { token };
+    const token = await this.generateToken(user.id, user.email, user.phone);
+    return { token, user };
   }
 
-  async generateToken(userId: string, email: string) {
-    return this.jwtService.sign({ sub: userId, email }, { expiresIn: '7d' });
+  async generateToken(userId: string, email: string, phone: string) {
+    return this.jwtService.sign(
+      { sub: userId, email, phone },
+      { expiresIn: '7d' },
+    );
   }
 }

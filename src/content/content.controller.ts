@@ -56,8 +56,8 @@ export class ContentController {
   //   user interactions
   @Post(':id/like')
   @UseGuards(JwtAuthGuard)
-  addLike(@Param('id') id: string) {
-    return this.contentService.addLike(id);
+  addLike(@Param('id') id: string, @CurrentUser() user: CurrentUserType) {
+    return this.contentService.addLike(id, user.id);
   }
 
   @Get('user/relevant')
@@ -75,7 +75,10 @@ export class ContentController {
 
   @Get(':id/whatsapp')
   @UseGuards(JwtAuthGuard)
-  getWhatsAppLink(@Param('id') id: string) {
-    return this.contentService.getWhatsAppLink(id);
+  getWhatsAppLink(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentUserType,
+  ) {
+    return this.contentService.getWhatsAppLink(id, user.id);
   }
 }

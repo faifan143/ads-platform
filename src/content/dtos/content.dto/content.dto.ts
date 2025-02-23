@@ -9,6 +9,7 @@ import {
   IsString,
   IsUUID,
   Min,
+  IsPhoneNumber,
 } from 'class-validator';
 
 export class ContentDto {
@@ -21,8 +22,12 @@ export class ContentDto {
   description: string;
 
   @IsNotEmpty()
-  @IsUUID()
-  owner: string;
+  @IsString()
+  ownerName: string;
+
+  @IsNotEmpty()
+  @IsPhoneNumber()
+  ownerNumber: string;
 
   @IsNotEmpty()
   @IsEnum(AdType)

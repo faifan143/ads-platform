@@ -58,8 +58,12 @@ export class SignUpDto {
 }
 
 export class SignInDto {
-  @IsEmail()
-  email: string;
+  @IsString()
+  @Matches(/^09\d{8}$/, {
+    message:
+      'Phone number must start with 09 followed by 8 digits (e.g., 0912345678)',
+  })
+  phone: string;
 
   @IsString()
   password: string;

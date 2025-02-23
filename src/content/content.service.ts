@@ -25,12 +25,15 @@ export class ContentService {
   }
 
   async findAll(params: FindAllContentDto = {}) {
-    const { ownerId, type, interestId } = params;
+    const { ownerName, ownerNumber, type, interestId } = params;
 
     const where: any = {};
 
-    if (ownerId) {
-      where.owner = ownerId;
+    if (ownerName) {
+      where.ownerName = ownerName;
+    }
+    if (ownerNumber) {
+      where.ownerNumber = ownerNumber;
     }
 
     if (type) {
@@ -110,23 +113,6 @@ export class ContentService {
     // Then delete the content
     await this.prisma.content.delete({
       where: { id },
-    });
-  }
-
-  async addLike(id: string) {
-    // Check if content exists
-    await this.findOne(id);
-
-    return this.prisma.content.update({
-      where: { id },
-      data: {
-        likes: {
-          increment: 1,
-        },
-      },
-      include: {
-        interests: true,
-      },
     });
   }
 
@@ -211,35 +197,67 @@ export class ContentService {
       },
     });
   }
+  async addLike(contentId: string, userId: string) {
+    // Check if content exists
+    await this.findOne(contentId);
 
-  async getWhatsAppLink(contentId: string) {
+    // Check if user exists
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with ID "${userId}" not found`);
+    }
+
+    // Create or update the view record
+    await this.prisma.userContentLike.upsert({
+      where: {
+        userId_contentId: {
+          userId,
+          contentId,
+        },
+      },
+      update: {
+        likedAt: new Date(),
+      },
+      create: {
+        userId,
+        contentId,
+        likedAt: new Date(),
+      },
+    });
+  }
+
+  async getWhatsAppLink(contentId: string, userId: string) {
     // Get content with owner information
-    const content = await this.prisma.content.findUnique({
-      where: { id: contentId },
-      select: { owner: true },
-    });
-
-    if (!content) {
-      throw new NotFoundException(`Content with ID "${contentId}" not found`);
-    }
-
-    // Get the owner's phone number
-    const owner = await this.prisma.user.findUnique({
-      where: { id: content.owner },
-      select: { phone: true },
-    });
-
-    if (!owner) {
-      throw new NotFoundException('Content owner not found');
-    }
+    const content = await this.findOne(contentId);
 
     // Format phone for WhatsApp - convert from Syrian format (09XXXXXXXX) to international format
     // Replace "09" with "963" (Syria's country code)
-    let formattedPhone = owner.phone;
+    let formattedPhone = content.ownerNumber;
     if (formattedPhone.startsWith('09')) {
       // Remove the "0" and add Syria's country code
       formattedPhone = `963${formattedPhone.substring(1)}`;
     }
+
+    // Create or update the view record
+    await this.prisma.userContentWhatsApp.upsert({
+      where: {
+        userId_contentId: {
+          userId,
+          contentId,
+        },
+      },
+      update: {
+        whatsappedAt: new Date(),
+      },
+      create: {
+        userId,
+        contentId,
+        whatsappedAt: new Date(),
+      },
+    });
 
     // Create WhatsApp link
     const whatsappLink = `https://wa.me/${formattedPhone}`;

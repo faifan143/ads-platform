@@ -1,4 +1,3 @@
-// seed.ts
 import { PrismaClient, Gender, AdType, Providence } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { green, red, yellow, blue } from 'chalk';
@@ -18,6 +17,8 @@ async function cleanDatabase() {
   try {
     await prisma.$transaction([
       prisma.userContent.deleteMany(),
+      prisma.userContentLike.deleteMany(),
+      prisma.userContentWhatsApp.deleteMany(),
       prisma.content.deleteMany(),
       prisma.productPurchase.deleteMany(),
       prisma.interest.deleteMany(),
@@ -139,12 +140,8 @@ async function seedUsers() {
 
   for (const user of userData) {
     const createdUser = await prisma.user.create({
-      data: {
-        ...user,
-        password: await hashPassword('User123!'),
-      },
+      data: { ...user, password: await hashPassword('User123!') },
     });
-
     const age =
       new Date().getFullYear() - createdUser.dateOfBirth.getFullYear();
     const compatibleInterests = interests.filter(
@@ -153,20 +150,19 @@ async function seedUsers() {
         age >= i.minAge &&
         age <= i.maxAge,
     );
+    const selectedInterests = compatibleInterests
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 5);
 
     await prisma.user.update({
       where: { id: createdUser.id },
       data: {
-        interests: {
-          connect: compatibleInterests
-            .sort(() => Math.random() - 0.5)
-            .slice(0, 5)
-            .map((i) => ({ id: i.id })),
-        },
+        interests: { connect: selectedInterests.map((i) => ({ id: i.id })) },
         ProductPurchase: {
           create: products
+            .filter((product) => product.pointsPrice <= createdUser.points)
             .sort(() => Math.random() - 0.5)
-            .slice(0, Math.floor(Math.random() * products.length))
+            .slice(0, Math.floor(Math.random() * 3))
             .map((product) => ({
               productId: product.id,
               pointsSpent: product.pointsPrice,
@@ -188,11 +184,11 @@ async function seedContent() {
       data: {
         title: `${user.name}'s Ramadan Special`,
         description: `Special Ramadan offers and deals in ${user.providence.toLowerCase()}`,
-        owner: user.id,
+        ownerName: user.name,
+        ownerNumber: user.phone,
         type: Math.random() > 0.5 ? AdType.STORY : AdType.REEL,
-        intervalHours: Math.floor(Math.random() * 3) + 1, // 1-3 hours
+        intervalHours: Math.floor(Math.random() * 3) + 1,
         endValidationDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        likes: Math.floor(Math.random() * 500), // More realistic likes
         mediaUrls: [
           'https://source.unsplash.com/800x600/?ramadan',
           'https://source.unsplash.com/800x600/?mosque',
@@ -206,18 +202,25 @@ async function seedContent() {
       },
     });
 
-    for (const viewer of users.filter(
-      (u) => u.id !== user.id && Math.random() > 0.5,
-    )) {
+    const viewers = users.filter((u) => u.id !== user.id);
+    const randomViewers = viewers
+      .sort(() => Math.random() - 0.5)
+      .slice(0, Math.floor(Math.random() * viewers.length * 0.7));
+    for (const viewer of randomViewers) {
       await prisma.userContent.create({
-        data: {
-          userId: viewer.id,
-          contentId: content.id,
-        },
+        data: { userId: viewer.id, contentId: content.id },
       });
+      if (Math.random() > 0.6)
+        await prisma.userContentLike.create({
+          data: { userId: viewer.id, contentId: content.id },
+        });
+      if (Math.random() > 0.7)
+        await prisma.userContentWhatsApp.create({
+          data: { userId: viewer.id, contentId: content.id },
+        });
     }
   }
-  console.log(green('✅ Content and views created'));
+  console.log(green('✅ Content with views, likes, and shares created'));
 }
 
 async function main() {

@@ -1,16 +1,20 @@
 import { AdType } from '@prisma/client';
-import { IsEnum, IsOptional, IsUUID } from 'class-validator';
+import { IsEnum, IsOptional, IsString, IsPhoneNumber } from 'class-validator';
 
 export class FindAllContentDto {
   @IsOptional()
-  @IsUUID()
-  ownerId?: string;
+  @IsString()
+  ownerName?: string;
+
+  @IsOptional()
+  @IsPhoneNumber()
+  ownerNumber?: string;
 
   @IsOptional()
   @IsEnum(AdType)
   type?: AdType;
 
   @IsOptional()
-  @IsUUID()
+  @IsString()
   interestId?: string;
 }
