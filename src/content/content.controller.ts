@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -17,7 +16,6 @@ import {
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import { CurrentUserType } from 'src/auth/types/current-user.type';
-import { FileManagementService } from 'src/file-management/file-management.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ContentService } from './content.service';
 import { ContentDto } from './dtos/content.dto/content.dto';
@@ -26,30 +24,11 @@ import { UpdateContentDto } from './dtos/update-content.dto/update-content.dto';
 
 @Controller('content')
 export class ContentController {
-  constructor(
-    private readonly contentService: ContentService,
-    private readonly fileManagementService: FileManagementService,
-  ) {}
-
-  //   admin interactions
-
-  @Post('upload-media')
-  @UseInterceptors(FilesInterceptor('files'))
-  async uploadContentMedia(
-    @UploadedFiles() files: Array<Express.Multer.File>,
-  ): Promise<string[]> {
-    if (!files || files.length === 0) {
-      throw new BadRequestException('No files provided');
-    }
-    console.log('pre files : ', files);
-
-    const result = await this.fileManagementService.saveFiles(files);
-    return result.map((res) => res.path);
-  }
+  constructor(private readonly contentService: ContentService) {}
 
   @Post()
   @UseInterceptors(FilesInterceptor('files'))
-  // @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard)
   create(
     @UploadedFiles() files: Array<Express.Multer.File>,
     @Body() contentDto: Omit<ContentDto, 'mediaUrls'>,

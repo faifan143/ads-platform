@@ -4,12 +4,15 @@ import {
   UseInterceptors,
   UploadedFile,
   UploadedFiles,
+  UseGuards,
 } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { FileManagementService } from './file-management.service';
 import { ProcessedFileResult } from './dto/file-management.types';
+import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 
 @Controller('files')
+@UseGuards(JwtAuthGuard)
 export class FileManagementController {
   constructor(private readonly fileService: FileManagementService) {}
 
