@@ -1,15 +1,22 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as ffmpeg from 'fluent-ffmpeg';
-import { existsSync, mkdirSync, readdirSync, statSync, unlink } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  unlink,
+  writeFileSync,
+} from 'fs';
 import { extname, join } from 'path';
 import * as sharp from 'sharp';
 import { formatTimestamp } from 'src/utils/timestamp-formatter';
 import * as SftpClient from 'ssh2-sftp-client';
 import { promisify } from 'util';
+import * as rimraf from 'rimraf';
 
 const unlinkAsync = promisify(unlink);
-
 interface ProcessedFileResult {
   originalName: string;
   fileName: string;
@@ -73,15 +80,12 @@ export class FileManagementService {
     if (!files || files.length === 0) {
       throw new BadRequestException('No files provided');
     }
-    console.log(1);
-
     const results: ProcessedFileResult[] = [];
     const errors: any[] = [];
 
     try {
       // Connect to VPS before processing files
       await this.connectToVPS();
-      console.log(2);
 
       // Process all files
       await Promise.all(
@@ -231,29 +235,76 @@ export class FileManagementService {
       mkdirSync(outputDir, { recursive: true });
     }
 
-    const outputPath = join(outputDir, `${baseFileName}.m3u8`);
+    // Define master playlist path
+    const masterPlaylistPath = join(outputDir, `${baseFileName}.m3u8`);
 
+    // Define quality variants from 144p to 1080p
+    const qualities = [
+      { name: '720p', resolution: '1280x720', bitrate: '2500k' },
+      { name: '360p', resolution: '640x360', bitrate: '600k' },
+      { name: '144p', resolution: '256x144', bitrate: '200k' },
+    ];
+
+    // Process video into adaptive streaming format
     await new Promise<void>((resolve, reject) => {
-      ffmpeg(videoPath)
-        .addOptions([
-          '-profile:v baseline', // H.264 profile (Baseline, Main, or High)
-          '-level 3.0', // Compatibility level
-          '-start_number 0', // Start segment number from 0
-          '-hls_time 10', // Duration of each segment (10 seconds)
-          '-hls_list_size 0', // Include all segments in the playlist
-          '-hls_segment_filename',
-          `${outputDir}/${baseFileName}-%03d.ts`, // Segment files
-        ])
-        .output(outputPath)
+      const command = ffmpeg(videoPath);
+
+      // Add input options
+      command
+        .addOption('-preset', 'medium')
+        .addOption('-profile:v', 'main')
+        .addOption('-crf', '23')
+        .addOption('-sc_threshold', '0')
+        .addOption('-g', '48')
+        .addOption('-keyint_min', '48');
+
+      // Create variant outputs
+      qualities.forEach((quality) => {
+        command
+          .output(join(outputDir, `${baseFileName}_${quality.name}.m3u8`))
+          .addOption('-vf', `scale=${quality.resolution.replace('x', ':')}`)
+          .addOption('-b:v', quality.bitrate)
+          .addOption('-maxrate', `${parseInt(quality.bitrate) * 1.5}k`)
+          .addOption('-bufsize', `${parseInt(quality.bitrate) * 2}k`)
+          .addOption('-c:v', 'libx264')
+          .addOption('-c:a', 'aac')
+          .addOption('-b:a', '128k')
+          .addOption('-hls_time', '6')
+          .addOption('-hls_list_size', '0')
+          .addOption('-hls_playlist_type', 'vod')
+          .addOption(
+            '-hls_segment_filename',
+            join(outputDir, `${baseFileName}_${quality.name}_%03d.ts`),
+          );
+      });
+
+      // Create the master playlist manually after all processing is done
+      command
+        .on('end', async () => {
+          try {
+            // Create master playlist content
+            let masterContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
+            qualities.forEach((quality) => {
+              const bandwidth = parseInt(quality.bitrate) * 1000;
+              const resolution = quality.resolution;
+              masterContent += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${resolution},NAME="${quality.name}"\n`;
+              masterContent += `${baseFileName}_${quality.name}.m3u8\n`;
+            });
+
+            // Write master playlist
+            writeFileSync(masterPlaylistPath, masterContent);
+
+            this.logger.log('HLS adaptive streaming processing completed');
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        })
         .on('progress', (progress) => {
           const percent = progress.percent
             ? Number(progress.percent).toFixed(2)
             : '0.00';
           this.logger.debug(`Processing HLS: ${percent}% done`);
-        })
-        .on('end', () => {
-          this.logger.log('HLS video processing completed');
-          resolve();
         })
         .on('error', (err) => {
           this.logger.error('Error during HLS video processing:', err);
@@ -264,39 +315,47 @@ export class FileManagementService {
 
     await this.cleanupLocalFile(localFilePath);
 
-    // Upload .m3u8 and .ts files to VPS
-    const files = readdirSync(outputDir).filter((file) =>
-      /\.(m3u8|ts)$/.test(file),
-    );
-
-    // Upload files in batches to prevent memory leaks
-    const batchSize = 3;
-    for (let i = 0; i < files.length; i += batchSize) {
-      const batch = files.slice(i, i + batchSize);
-      await Promise.all(
-        batch.map(async (file) => {
-          const localFilePath = join(outputDir, file);
-          const remoteFilePath = join(
-            this.vpsConfig.basePath,
-            'videos',
-            'converted',
-            baseFileName,
-            file,
-          ).replace(/\\/g, '/'); // Ensure forward slashes for remote path
-
-          try {
-            await this.uploadToVPS(localFilePath, remoteFilePath);
-          } catch (error) {
-            this.logger.error(`Failed to upload ${file}:`, error);
-            throw error;
-          }
-        }),
+    try {
+      // Find all generated files (master playlist, variant playlists, and segments)
+      const files = readdirSync(outputDir).filter((file) =>
+        /\.(m3u8|ts)$/.test(file),
       );
+
+      // Upload files in batches to prevent memory leaks
+      const batchSize = 3;
+      for (let i = 0; i < files.length; i += batchSize) {
+        const batch = files.slice(i, i + batchSize);
+        await Promise.all(
+          batch.map(async (file) => {
+            const localFilePath = join(outputDir, file);
+            const remoteFilePath = join(
+              this.vpsConfig.basePath,
+              'videos',
+              'converted',
+              baseFileName,
+              file,
+            ).replace(/\\/g, '/'); // Ensure forward slashes for remote path
+
+            try {
+              await this.uploadToVPS(localFilePath, remoteFilePath);
+              await this.cleanupLocalFile(localFilePath);
+            } catch (error) {
+              this.logger.error(`Failed to upload ${file}:`, error);
+              throw error;
+            }
+          }),
+        );
+      }
+      // Clean up the entire output directory after all files are uploaded
+      this.logger.log(`Cleaning up local output directory: ${outputDir}`);
+      rimraf.sync(outputDir);
+    } catch (error) {
+      this.logger.error(`Error during file cleanup: ${error.message}`);
+      // Don't throw here, since the main operation succeeded
     }
 
-    return outputPath;
+    return masterPlaylistPath;
   }
-
   async connectToVPS() {
     if (!this.isSftpConnected) {
       await this.sftp.connect({
