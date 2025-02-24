@@ -34,7 +34,7 @@ export class FileManagementController {
   async uploadImage(
     @UploadedFile() file: Express.Multer.File,
   ): Promise<ProcessedFileResult> {
-    return this.fileService.saveFile(file, 'images');
+    return this.fileService.saveFile(file);
   }
 
   @Post('upload/video')
@@ -42,6 +42,6 @@ export class FileManagementController {
   async uploadVideo(
     @UploadedFile() file: Express.Multer.File,
   ): Promise<ProcessedFileResult> {
-    return this.fileService.saveFile(file, 'videos');
+    return this.fileService.saveFile(file);
   }
 }
