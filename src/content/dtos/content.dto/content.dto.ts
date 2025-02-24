@@ -6,8 +6,8 @@ import {
   IsEnum,
   IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
-  IsUrl,
   IsUUID,
   Matches,
   Min,
@@ -48,9 +48,13 @@ export class ContentDto {
 
   @IsArray()
   @IsString({ each: true })
-  @IsUrl({}, { each: true })
+  @Matches(/^http:\/\/anycode-sy\.com\/media\/.*\.(webp|m3u8)$/, {
+    message: 'Media URLs must be valid processed files',
+    each: true,
+  })
   mediaUrls: string[];
 
+  @IsOptional()
   @IsArray()
   @IsUUID('4', { each: true })
   interestIds: string[];

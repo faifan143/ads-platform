@@ -1,21 +1,59 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ContentDto } from './dtos/content.dto/content.dto';
 import { FindAllContentDto } from './dtos/find-all-content.dto/find-all-content.dto';
 import { UpdateContentDto } from './dtos/update-content.dto/update-content.dto';
+import { FileManagementService } from 'src/file-management/file-management.service';
 
 @Injectable()
 export class ContentService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private fileManagementService: FileManagementService,
+  ) {}
 
-  async create(contentDto: ContentDto) {
+  private async getMediaUrls(files: Array<Express.Multer.File>) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('No files provided');
+    }
+    console.log('pre files : ', files);
+
+    const result = await this.fileManagementService.saveFiles(files);
+    return result.map((res) => res.path);
+  }
+
+  async create(
+    files: Array<Express.Multer.File>,
+    contentDto: Omit<ContentDto, 'mediaUrls'>,
+  ) {
+    const mediaUrls = await this.getMediaUrls(files);
     const { interestIds, ...contentData } = contentDto;
+
+    let interests = [];
+    if (!contentDto.interestIds || contentDto.interestIds.length == 0) {
+      interests = await this.prisma.interest.findMany({
+        select: {
+          id: true,
+        },
+      });
+      interests = interests.map((item) => item.id);
+      console.log('all interest : ', interests);
+    } else {
+      interests = interestIds;
+      console.log('only interest : ', interests);
+    }
 
     return this.prisma.content.create({
       data: {
         ...contentData,
+        intervalHours: parseInt(contentData.intervalHours + ''),
+        mediaUrls,
         interests: {
-          connect: interestIds.map((id) => ({ id })),
+          connect: interests.map((id) => ({ id })),
         },
       },
       include: {
