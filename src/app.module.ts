@@ -12,6 +12,7 @@ import { FileManagementModule } from './file-management/file-management.module';
 
 @Module({
   imports: [
+    AuthModule,
     // Load and validate environment variables
     ConfigModule.forRoot({
       isGlobal: true,
