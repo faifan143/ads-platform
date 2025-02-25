@@ -12,7 +12,7 @@ import { ProcessedFileResult } from './dto/file-management.types';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 
 @Controller('files')
-@UseGuards(JwtAuthGuard)
+// @UseGuards(JwtAuthGuard)
 export class FileManagementController {
   constructor(private readonly fileService: FileManagementService) {}
 
