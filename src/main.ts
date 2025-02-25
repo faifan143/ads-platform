@@ -16,6 +16,8 @@ async function bootstrap() {
     logger: ['error', 'warn', 'debug', 'log', 'verbose'],
   });
 
+  app.setGlobalPrefix('api');
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -40,7 +42,7 @@ async function bootstrap() {
   app.enableCors(corsConfig);
 
   // Get port
-  const port = process.env.PORT || 8000;
+  const port = process.env.PORT || 3001;
 
   // Start server
   await app.listen(port, '0.0.0.0', () => {
