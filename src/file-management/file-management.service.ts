@@ -162,7 +162,7 @@ export class FileManagementService {
     // Initialize storage directories
     this.initializeStorage();
     // Setup security for the media directory
-    this.setupMediaDirectorySecurity();
+    // this.setupMediaDirectorySecurity();
   }
 
   private async initializeStorage() {
@@ -664,73 +664,73 @@ export class FileManagementService {
     }`;
   }
 
+  private getPublicPath(relativePath: string): string {
+    return `http://anycode-sy.com/media/${this.configService.get(
+      'storage.projectName',
+    )}/${relativePath}`;
+  }
+
+  // // Method to sign URLs with expiration time (optional)
+  // private signUrl(url: string, expirationMinutes = 60): string {
+  //   const expiryTime = Math.floor(Date.now() / 1000) + expirationMinutes * 60;
+  //   const token = this.jwtService.sign(
+  //     { exp: expiryTime },
+  //     { secret: this.configService.get('jwt.mediaSecret') },
+  //   );
+
+  //   // Add the token as a query parameter
+  //   return `${url}?token=${token}`;
+  // }
   // private getPublicPath(relativePath: string): string {
-  //   return `http://anycode-sy.com/media/${this.configService.get(
-  //     'storage.projectName',
-  //   )}/${relativePath}`;
+  //   const projectName = this.configService.get('storage.projectName');
+  //   const baseUrl = `http://anycode-sy.com/api/media/${projectName}/${relativePath}`;
+
+  //   // If you want to use signed URLs (more secure), uncomment this line:
+  //   return this.signUrl(baseUrl);
+
+  //   // For basic auth protection without signed URLs, use this:
+  //   // return baseUrl;
   // }
 
-  // Method to sign URLs with expiration time (optional)
-  private signUrl(url: string, expirationMinutes = 60): string {
-    const expiryTime = Math.floor(Date.now() / 1000) + expirationMinutes * 60;
-    const token = this.jwtService.sign(
-      { exp: expiryTime },
-      { secret: this.configService.get('jwt.mediaSecret') },
-    );
+  // // Method to create .htaccess for securing the media directory
+  // private async setupMediaDirectorySecurity(): Promise<void> {
+  //   try {
+  //     await this.sftpPool.withConnection(async () => {
+  //       const basePath = this.vpsConfig.basePath;
+  //       const htaccessContent = `
+  //           # Deny direct access to media files
+  //           <IfModule mod_rewrite.c>
+  //             RewriteEngine On
+  //             RewriteCond %{REQUEST_URI} ^/media/
+  //             RewriteCond %{HTTP_REFERER} !^http://(www\\.)?anycode-sy\\.com/ [NC]
+  //             RewriteRule .* - [F,L]
+  //           </IfModule>
 
-    // Add the token as a query parameter
-    return `${url}?token=${token}`;
-  }
-  private getPublicPath(relativePath: string): string {
-    const projectName = this.configService.get('storage.projectName');
-    const baseUrl = `http://anycode-sy.com/api/media/${projectName}/${relativePath}`;
+  //           # Deny access to all
+  //           <IfModule !mod_rewrite.c>
+  //             Order deny,allow
+  //             Deny from all
+  //           </IfModule>
+  //       `;
+  //       // Write .htaccess file to the media directory
+  //       const tempPath = join(this.projectPath, '.htaccess.tmp');
+  //       writeFileSync(tempPath, htaccessContent);
 
-    // If you want to use signed URLs (more secure), uncomment this line:
-    return this.signUrl(baseUrl);
+  //       await this.uploadFileToVPS(tempPath, `${basePath}/.htaccess`, true);
+  //       await unlinkAsync(tempPath).catch((err) =>
+  //         this.logger.warn(
+  //           `Failed to delete temporary .htaccess file: ${err.message}`,
+  //         ),
+  //       );
 
-    // For basic auth protection without signed URLs, use this:
-    // return baseUrl;
-  }
-
-  // Method to create .htaccess for securing the media directory
-  private async setupMediaDirectorySecurity(): Promise<void> {
-    try {
-      await this.sftpPool.withConnection(async () => {
-        const basePath = this.vpsConfig.basePath;
-        const htaccessContent = `
-            # Deny direct access to media files
-            <IfModule mod_rewrite.c>
-              RewriteEngine On
-              RewriteCond %{REQUEST_URI} ^/media/
-              RewriteCond %{HTTP_REFERER} !^http://(www\\.)?anycode-sy\\.com/ [NC]
-              RewriteRule .* - [F,L]
-            </IfModule>
-
-            # Deny access to all
-            <IfModule !mod_rewrite.c>
-              Order deny,allow
-              Deny from all
-            </IfModule>
-        `;
-        // Write .htaccess file to the media directory
-        const tempPath = join(this.projectPath, '.htaccess.tmp');
-        writeFileSync(tempPath, htaccessContent);
-
-        await this.uploadFileToVPS(tempPath, `${basePath}/.htaccess`, true);
-        await unlinkAsync(tempPath).catch((err) =>
-          this.logger.warn(
-            `Failed to delete temporary .htaccess file: ${err.message}`,
-          ),
-        );
-
-        this.logger.log('Media directory security setup completed');
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to setup media directory security: ${error.message}`,
-      );
-    }
-  }
+  //       this.logger.log('Media directory security setup completed');
+  //     });
+  //   } catch (error) {
+  //     this.logger.error(
+  //       `Failed to setup media directory security: ${error.message}`,
+  //     );
+  //   }
+  // }
 
   async onApplicationShutdown() {
     // Close all SFTP connections when the application shuts down
