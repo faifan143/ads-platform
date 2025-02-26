@@ -174,33 +174,35 @@ export class FileManagementService {
       if (type === 'images') {
         // Process image (convert to webp and resize)
         processedFilePath = await this.processImage(file.path);
-        
+
         // Define the destination path within the storage directory
         const destinationPath = join(this.projectPath, type, fileName);
-        
+
         // Ensure the directory exists
         const dirPath = dirname(destinationPath);
         if (!existsSync(dirPath)) {
           mkdirSync(dirPath, { recursive: true });
         }
-        
+
         // Copy the processed file to the destination
         copyFileSync(processedFilePath, destinationPath);
-        
+
         // Set permissions
         try {
           const fs = require('fs');
           fs.chmodSync(destinationPath, 0o644);
         } catch (chmodError) {
-          this.logger.warn(`Could not set permissions for ${destinationPath}: ${chmodError.message}`);
+          this.logger.warn(
+            `Could not set permissions for ${destinationPath}: ${chmodError.message}`,
+          );
         }
-        
+
         const fileStats = statSync(destinationPath);
         const relativePath = `${type}/${fileName}`;
-        
+
         // Clean up temporary processed file
         await this.cleanupLocalFile(processedFilePath);
-        
+
         return {
           originalName: file.originalname,
           fileName: fileName,
@@ -212,7 +214,7 @@ export class FileManagementService {
         // Process video and generate HLS files
         const baseFileName = fileName.replace(/\.[^/.]+$/, '');
         await this.processVideo(file.path, fileName);
-        
+
         // For HLS streaming, return the path to the m3u8 file
         return {
           originalName: file.originalname,
@@ -249,15 +251,20 @@ export class FileManagementService {
   ): Promise<string> {
     const videoPath = localFilePath;
     const baseFileName = fileName.replace(/\.[^/.]+$/, ''); // Extract base filename
-    
+
     // Temporary directory for processing
     const tempOutputDir = join(os.tmpdir(), `video-processing-${Date.now()}`);
     if (!existsSync(tempOutputDir)) {
       mkdirSync(tempOutputDir, { recursive: true });
     }
-    
+
     // Final destination in the storage directory
-    const finalOutputDir = join(this.projectPath, 'videos', 'converted', baseFileName);
+    const finalOutputDir = join(
+      this.projectPath,
+      'videos',
+      'converted',
+      baseFileName,
+    );
     if (!existsSync(finalOutputDir)) {
       mkdirSync(finalOutputDir, { recursive: true });
     }
@@ -395,29 +402,33 @@ export class FileManagementService {
       for (const file of files) {
         const sourcePath = join(tempOutputDir, file);
         const destPath = join(finalOutputDir, file);
-        
+
         // Ensure destination directory exists
         if (!existsSync(dirname(destPath))) {
           mkdirSync(dirname(destPath), { recursive: true });
         }
-        
+
         // Copy the file to the destination
         copyFileSync(sourcePath, destPath);
-        
+
         // Set permissions
         try {
           const fs = require('fs');
           fs.chmodSync(destPath, 0o644);
         } catch (chmodError) {
-          this.logger.warn(`Could not set permissions for ${destPath}: ${chmodError.message}`);
+          this.logger.warn(
+            `Could not set permissions for ${destPath}: ${chmodError.message}`,
+          );
         }
-        
+
         // Clean up source file
         await this.cleanupLocalFile(sourcePath);
       }
 
       // Clean up the entire temp directory after all files are moved
-      this.logger.log(`Cleaning up temporary output directory: ${tempOutputDir}`);
+      this.logger.log(
+        `Cleaning up temporary output directory: ${tempOutputDir}`,
+      );
       rimraf.sync(tempOutputDir);
     } catch (error) {
       this.logger.error(`Error during file handling: ${error.message}`);
