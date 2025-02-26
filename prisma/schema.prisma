@@ -16,6 +16,21 @@ model Admin {
   updatedAt DateTime @updatedAt
 }
 
+model ContentGem {
+  id             String    @id @default(uuid())
+  contentId      String    @unique
+  points         Int
+  createdAt      DateTime  @default(now())
+  claimedByUserId String?
+  claimedAt      DateTime?
+  
+  content        Content   @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  claimedByUser  User?     @relation(fields: [claimedByUserId], references: [id])
+  
+  @@index([contentId])
+  @@index([claimedByUserId])
+}
+
 model Interest {
   id             String    @id @default(uuid())
   name           String    @unique
@@ -36,6 +51,7 @@ model User {
   dateOfBirth         DateTime
   gender              Gender
   providence          Providence
+  claimedGems    ContentGem[]
   adsPerMonth         Int                   @default(0)
   points              Int                   @default(0)
   createdAt           DateTime              @default(now())
@@ -68,6 +84,7 @@ model Content {
   type              AdType
   intervalHours     Int
   endValidationDate DateTime
+  gem            ContentGem?
   mediaUrls         String[]
   interests         Interest[]            @relation("InterestContent")
   viewedBy          UserContent[]

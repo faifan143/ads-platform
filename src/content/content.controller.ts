@@ -24,6 +24,7 @@ import { UpdateContentDto } from './dtos/update-content.dto/update-content.dto';
 import { AdminGuard } from 'src/auth/guards/admin.guard';
 import { Admin } from 'src/auth/decorators/admin.decorator';
 import { PaginationDto } from './dtos/pagination.dto';
+import { GenerateGemDto } from './dtos/gem.dto';
 
 @Controller('content')
 @UseGuards(JwtAuthGuard)
@@ -64,6 +65,13 @@ export class ContentController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id') id: string) {
     return this.contentService.remove(id);
+  }
+
+  @Post('generate-gem')
+  @UseGuards(AdminGuard)
+  @Admin()
+  generateGem(@Query() gemDto: GenerateGemDto) {
+    return this.contentService.generateGem(gemDto.points);
   }
 
   //   user interactions

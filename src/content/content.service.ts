@@ -403,74 +403,192 @@ export class ContentService {
     };
   }
 
-  /**
-   * Records when a user views content and awards points
-   */
-  async markAsViewed(contentId: string, userId: string) {
-    // Check if both content and user exist at the same time to reduce database calls
-    const [content, user] = await Promise.all([
-      this.prisma.content.findUnique({ where: { id: contentId } }),
-      this.prisma.user.findUnique({ where: { id: userId } }),
-    ]);
+/**
+ * Creates a "gem" (reward) for a random piece of content that will be awarded to the first user who views it
+ * @param points - The number of points the gem is worth
+ */
+async generateGem(points: number) {
+  if (points <= 0) {
+    throw new BadRequestException('Points value must be greater than zero');
+  }
 
-    if (!content) {
-      throw new NotFoundException(`Content with ID "${contentId}" not found`);
-    }
+  // Find all valid content
+  const validContent = await this.prisma.content.findMany({
+    where: {
+      endValidationDate: {
+        gte: new Date(),
+      },
+    },
+    select: {
+      id: true,
+      title: true,
+    },
+  });
 
-    if (!user) {
-      throw new NotFoundException(`User with ID "${userId}" not found`);
-    }
+  if (validContent.length === 0) {
+    throw new BadRequestException('No valid content available for gem generation');
+  }
 
-    // Check if user has already viewed this content
-    const existingView = await this.prisma.userContent.findUnique({
+  // Randomly select a piece of content
+  const randomIndex = Math.floor(Math.random() * validContent.length);
+  const selectedContent = validContent[randomIndex];
+
+  // Check if there's already a gem for this content
+  const existingGem = await this.prisma.contentGem.findUnique({
+    where: {
+      contentId: selectedContent.id,
+    },
+  });
+
+  if (existingGem) {
+    // Update existing gem
+    const updatedGem = await this.prisma.contentGem.update({
       where: {
-        userId_contentId: { userId, contentId },
+        contentId: selectedContent.id,
+      },
+      data: {
+        points: points,
+        createdAt: new Date(),
+        claimedByUserId: null,
+        claimedAt: null,
       },
     });
-
-    // Only award points if it's a new view
-    const shouldAwardPoints = !existingView;
-
-    // Create or update the view record
-    await this.prisma.userContent.upsert({
-      where: {
-        userId_contentId: { userId, contentId },
-      },
-      update: {
-        viewedAt: new Date(),
-      },
-      create: {
-        userId,
-        contentId,
-        viewedAt: new Date(),
-      },
-    });
-
-    // Award points to user if this is a new view
-    if (shouldAwardPoints) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          points: {
-            increment: 2,
-          },
-        },
-      });
-
-      return {
-        success: true,
-        message: 'Content marked as viewed and 2 point awarded',
-        pointsAwarded: 2,
-      };
-    }
 
     return {
       success: true,
-      message: 'Content marked as viewed',
-      pointsAwarded: 0,
+      message: 'Gem updated successfully',
+      gem: {
+        contentId: updatedGem.contentId,
+        contentTitle: selectedContent.title,
+        points: updatedGem.points,
+      },
+    };
+  } else {
+    // Create new gem
+    const newGem = await this.prisma.contentGem.create({
+      data: {
+        contentId: selectedContent.id,
+        points: points,
+      },
+    });
+
+    return {
+      success: true,
+      message: 'Gem created successfully',
+      gem: {
+        contentId: newGem.contentId,
+        contentTitle: selectedContent.title,
+        points: newGem.points,
+      },
+    };
+  }
+}
+
+/**
+ * Modified markAsViewed to check for and claim gems
+ */
+async markAsViewed(contentId: string, userId: string) {
+  // Check if both content and user exist at the same time to reduce database calls
+  const [content, user] = await Promise.all([
+    this.prisma.content.findUnique({ where: { id: contentId } }),
+    this.prisma.user.findUnique({ where: { id: userId } }),
+  ]);
+
+  if (!content) {
+    throw new NotFoundException(`Content with ID "${contentId}" not found`);
+  }
+
+  if (!user) {
+    throw new NotFoundException(`User with ID "${userId}" not found`);
+  }
+
+  // Check if user has already viewed this content
+  const existingView = await this.prisma.userContent.findUnique({
+    where: {
+      userId_contentId: { userId, contentId },
+    },
+  });
+
+  // Only award points if it's a new view
+  const shouldAwardPoints = !existingView;
+
+  // Create or update the view record
+  await this.prisma.userContent.upsert({
+    where: {
+      userId_contentId: { userId, contentId },
+    },
+    update: {
+      viewedAt: new Date(),
+    },
+    create: {
+      userId,
+      contentId,
+      viewedAt: new Date(),
+    },
+  });
+
+  let pointsAwarded = 0;
+  let gemClaimed = false;
+  let gemPoints = 0;
+
+  // Award points to user if this is a new view
+  if (shouldAwardPoints) {
+    // Check if there's an unclaimed gem for this content
+    const gem = await this.prisma.contentGem.findFirst({
+      where: {
+        contentId,
+        claimedByUserId: null,
+      },
+    });
+
+    // Base points for viewing content
+    pointsAwarded = 2;
+
+    // If there's a gem, claim it and award additional points
+    if (gem) {
+      gemClaimed = true;
+      gemPoints = gem.points;
+      pointsAwarded += gem.points;
+
+      // Update gem to mark it as claimed
+      await this.prisma.contentGem.update({
+        where: { id: gem.id },
+        data: {
+          claimedByUserId: userId,
+          claimedAt: new Date(),
+        },
+      });
+    }
+
+    // Update user's points
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        points: {
+          increment: pointsAwarded,
+        },
+      },
+    });
+
+    const responseMessage = gemClaimed
+      ? `Content marked as viewed and ${pointsAwarded} points awarded (including ${gemPoints} gem bonus!)`
+      : 'Content marked as viewed and 2 points awarded';
+
+    return {
+      success: true,
+      message: responseMessage,
+      pointsAwarded,
+      gemClaimed,
+      gemPoints: gemClaimed ? gemPoints : undefined,
     };
   }
 
+  return {
+    success: true,
+    message: 'Content marked as viewed',
+    pointsAwarded: 0,
+  };
+}
   /**
    * Toggles a like on content - if already liked, removes the like;
    * if not liked, adds a like and awards points
