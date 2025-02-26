@@ -153,8 +153,14 @@ export class FileManagementService {
     this.cpuCount = os.cpus().length;
     this.logger.log(`System has ${this.cpuCount} CPU cores available`);
 
-    // Set FFmpeg path
-    ffmpeg.setFfmpegPath('C:/Program Files/ffmpeg/bin/ffmpeg.exe');
+    // Set FFmpeg path based on environment
+    const isWindows = os.platform() === 'win32';
+    if (isWindows) {
+      ffmpeg.setFfmpegPath('C:/Program Files/ffmpeg/bin/ffmpeg.exe');
+    } else {
+      // In Linux container, use the installed ffmpeg
+      ffmpeg.setFfmpegPath('/usr/bin/ffmpeg');
+    }
 
     // Create connection pool for SFTP
     this.sftpPool = new SftpConnectionPool(this.vpsConfig, 3, this.logger);
