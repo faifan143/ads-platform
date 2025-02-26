@@ -223,9 +223,9 @@ async function seedProducts() {
 async function main() {
   console.log(blue('🌱 Starting database seed...'));
   await cleanDatabase();
-  await seedAdmins();
-  await seedInterests();
-  await seedProducts();
+  // await seedAdmins();
+  // await seedInterests();
+  // await seedProducts();
   // await seedUsers();
   // await seedContent();
   console.log(green('\n✨ Database seeded successfully!'));
