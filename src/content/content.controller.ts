@@ -23,6 +23,7 @@ import { FindAllContentDto } from './dtos/find-all-content.dto/find-all-content.
 import { UpdateContentDto } from './dtos/update-content.dto/update-content.dto';
 import { AdminGuard } from 'src/auth/guards/admin.guard';
 import { Admin } from 'src/auth/decorators/admin.decorator';
+import { PaginationDto } from './dtos/pagination.dto';
 
 @Controller('content')
 @UseGuards(JwtAuthGuard)
@@ -73,9 +74,15 @@ export class ContentController {
   }
 
   @Get('user/relevant')
-  @UseGuards(JwtAuthGuard)
-  findRelevantForUser(@CurrentUser() user: CurrentUserType) {
-    return this.contentService.findRelevantForUser(user.id);
+  findRelevantForUser(
+    @CurrentUser() user: CurrentUserType,
+    @Query() paginationDto: PaginationDto,
+  ) {
+    return this.contentService.findRelevantForUser(
+      user.id,
+      paginationDto.page,
+      paginationDto.pageSize,
+    );
   }
 
   @Get(':id/view')

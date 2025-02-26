@@ -154,7 +154,15 @@ export class ContentService {
     });
   }
 
-  async findRelevantForUser(userId: string) {
+  async findRelevantForUser(userId: string, page = 1, pageSize = 10) {
+    // Validate pagination parameters
+    if (page < 1) page = 1;
+    if (pageSize < 1) pageSize = 10;
+
+    // Calculate pagination values
+    const skip = (page - 1) * pageSize;
+    const take = pageSize;
+
     // Get user details
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -174,24 +182,53 @@ export class ContentService {
     const birthDate = new Date(user.dateOfBirth);
     const age = today.getFullYear() - birthDate.getFullYear();
 
-    // Find content matching user's demographics
-    const relevantContent = await this.prisma.content.findMany({
-      where: {
-        // Content that's still valid
-        endValidationDate: {
-          gte: new Date(),
+    // Define the where clause for relevant content
+    const whereClause = {
+      // Content that's still valid
+      endValidationDate: {
+        gte: new Date(),
+      },
+      // Content matching user's interests by age and gender
+      interests: {
+        some: {
+          OR: [
+            { targetedGender: null }, // For all genders
+            { targetedGender: user.gender }, // For specific gender
+          ],
+          AND: [
+            { minAge: { lte: age } }, // User age greater than min age
+            { maxAge: { gte: age } }, // User age less than max age
+          ],
         },
-        // Content matching user's interests by age and gender
-        interests: {
-          some: {
-            OR: [
-              { targetedGender: null }, // For all genders
-              { targetedGender: user.gender }, // For specific gender
-            ],
-            AND: [
-              { minAge: { lte: age } }, // User age greater than min age
-              { maxAge: { gte: age } }, // User age less than max age
-            ],
+      },
+    };
+
+    // Get total count of relevant content for pagination metadata
+    const totalCount = await this.prisma.content.count({
+      where: whereClause,
+    });
+
+    // Get all content IDs that the user has already viewed
+    const viewedContent = await this.prisma.userContent.findMany({
+      where: {
+        userId: userId,
+      },
+      select: {
+        contentId: true,
+      },
+    });
+
+    // Extract the content IDs into an array
+    const viewedContentIds = viewedContent.map((item) => item.contentId);
+
+    // First, get unwatched content
+    const unwatchedContent = await this.prisma.content.findMany({
+      where: {
+        ...whereClause,
+        // Exclude content that has been viewed by the user
+        NOT: {
+          id: {
+            in: viewedContentIds,
           },
         },
       },
@@ -215,12 +252,78 @@ export class ContentService {
       },
     });
 
-    // If no relevant content found, get any valid content
+    // Then, get watched content
+    const watchedContent = await this.prisma.content.findMany({
+      where: {
+        ...whereClause,
+        // Only include content that has been viewed by the user
+        id: {
+          in: viewedContentIds,
+        },
+      },
+      include: {
+        interests: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        _count: {
+          select: {
+            likedBy: true,
+            viewedBy: true,
+            whatsappedBy: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    // Merge unwatched and watched content, prioritizing unwatched
+    const mergedContent = [...unwatchedContent, ...watchedContent];
+
+    // Apply pagination after merging
+    const relevantContent = mergedContent.slice(skip, skip + take);
+
+    // If no relevant content found, get any valid content with pagination
     if (relevantContent.length === 0) {
-      return this.prisma.content.findMany({
+      const fallbackWhereClause = {
+        endValidationDate: {
+          gte: new Date(),
+        },
+      };
+
+      // Get total count for fallback content
+      const fallbackTotalCount = await this.prisma.content.count({
+        where: fallbackWhereClause,
+      });
+
+      // Get all content IDs that the user has already viewed
+      const viewedFallbackContent = await this.prisma.userContent.findMany({
         where: {
-          endValidationDate: {
-            gte: new Date(),
+          userId: userId,
+        },
+        select: {
+          contentId: true,
+        },
+      });
+
+      // Extract the content IDs into an array
+      const viewedFallbackContentIds = viewedFallbackContent.map(
+        (item) => item.contentId,
+      );
+
+      // First, get unwatched fallback content
+      const unwatchedFallbackContent = await this.prisma.content.findMany({
+        where: {
+          ...fallbackWhereClause,
+          // Exclude content that has been viewed by the user
+          NOT: {
+            id: {
+              in: viewedFallbackContentIds,
+            },
           },
         },
         include: {
@@ -237,10 +340,69 @@ export class ContentService {
           createdAt: 'desc',
         },
       });
+
+      // Then, get watched fallback content
+      const watchedFallbackContent = await this.prisma.content.findMany({
+        where: {
+          ...fallbackWhereClause,
+          // Only include content that has been viewed by the user
+          id: {
+            in: viewedFallbackContentIds,
+          },
+        },
+        include: {
+          interests: true,
+          _count: {
+            select: {
+              likedBy: true,
+              viewedBy: true,
+              whatsappedBy: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
+
+      // Merge unwatched and watched content, prioritizing unwatched
+      const mergedFallbackContent = [
+        ...unwatchedFallbackContent,
+        ...watchedFallbackContent,
+      ];
+
+      // Apply pagination after merging
+      const fallbackContent = mergedFallbackContent.slice(skip, skip + take);
+
+      return {
+        data: fallbackContent,
+        meta: {
+          currentPage: page,
+          itemsPerPage: pageSize,
+          totalItems: fallbackTotalCount,
+          totalPages: Math.ceil(fallbackTotalCount / pageSize),
+          hasNextPage: page < Math.ceil(fallbackTotalCount / pageSize),
+          hasPreviousPage: page > 1,
+        },
+        isRelevant: false,
+      };
     }
 
-    return relevantContent;
+    // Return the paginated content with pagination metadata
+    return {
+      data: relevantContent,
+      meta: {
+        currentPage: page,
+        itemsPerPage: pageSize,
+        totalItems: totalCount,
+        totalPages: Math.ceil(totalCount / pageSize),
+        hasNextPage: page < Math.ceil(totalCount / pageSize),
+        hasPreviousPage: page > 1,
+      },
+      isRelevant: true,
+    };
   }
+
   /**
    * Records when a user views content and awards points
    */
