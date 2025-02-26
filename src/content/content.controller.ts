@@ -42,6 +42,13 @@ export class ContentController {
     return this.contentService.create(files, contentDto);
   }
 
+  @Post('generate-gem')
+  @UseGuards(AdminGuard)
+  @Admin()
+  generateGem(@Query() gemDto: GenerateGemDto) {
+    return this.contentService.generateGem(gemDto.points);
+  }
+
   @Get()
   findAll(@Query() query: FindAllContentDto) {
     return this.contentService.findAll(query);
@@ -65,13 +72,6 @@ export class ContentController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id') id: string) {
     return this.contentService.remove(id);
-  }
-
-  @Post('generate-gem')
-  @UseGuards(AdminGuard)
-  @Admin()
-  generateGem(@Query() gemDto: GenerateGemDto) {
-    return this.contentService.generateGem(gemDto.points);
   }
 
   //   user interactions

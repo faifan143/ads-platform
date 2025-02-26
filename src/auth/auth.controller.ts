@@ -48,7 +48,7 @@ export class AuthController {
     const { user } = await this.authService.signIn(dto);
     const token = await this.authService.generateToken(user.id, user.phone);
 
-    return { message: 'Signed in successfully', data: { ...user, token } };
+    return { message: 'Signed in successfully',token, data: { ...user } };
   }
 
   @Post('signout')
