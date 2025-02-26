@@ -16,7 +16,7 @@ import { MediaController } from './media.controller';
     }),
     AuthModule,
   ],
-  controllers: [FileManagementController, MediaController],
+  controllers: [FileManagementController],
   providers: [FileManagementService],
   exports: [FileManagementService],
 })

@@ -7,11 +7,11 @@ import {
   statSync,
   unlink,
   writeFileSync,
+  copyFileSync,
 } from 'fs';
-import { extname, join } from 'path';
+import { extname, join, dirname } from 'path';
 import * as sharp from 'sharp';
 import { formatTimestamp } from 'src/utils/timestamp-formatter';
-import * as SftpClient from 'ssh2-sftp-client';
 import { promisify } from 'util';
 import * as rimraf from 'rimraf';
 import * as os from 'os';
@@ -33,121 +33,22 @@ interface ProcessedFileResult {
   versions?: Array<{ quality: string; path: string }>;
 }
 
-// Reusable SFTP connection pool to prevent memory leaks
-class SftpConnectionPool {
-  private pool: SftpClient[] = [];
-  private inUse: Set<SftpClient> = new Set();
-  private config: any;
-  private logger: Logger;
-  private maxSize: number;
-  private pendingOperations: number = 0;
-  private maxConcurrentOperations: number = 10;
-
-  constructor(config: any, maxSize = 3, logger: Logger) {
-    this.config = config;
-    this.maxSize = maxSize;
-    this.logger = logger;
-  }
-
-  async getConnection(): Promise<SftpClient> {
-    // Wait if we're at max concurrent operations
-    while (this.pendingOperations >= this.maxConcurrentOperations) {
-      this.logger.debug(
-        `Waiting for SFTP operations to complete (${this.pendingOperations}/${this.maxConcurrentOperations})`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-
-    this.pendingOperations++;
-
-    // Check for an available connection in the pool
-    let client = this.pool.find((c) => !this.inUse.has(c));
-
-    if (!client && this.pool.length < this.maxSize) {
-      // Create a new connection if pool isn't at max capacity
-      client = new SftpClient();
-
-      try {
-        await client.connect({
-          host: this.config.host,
-          port: this.config.port,
-          username: this.config.username,
-          password: this.config.password,
-          readyTimeout: 100000,
-        });
-        this.pool.push(client);
-        this.logger.debug('Created new SFTP connection');
-      } catch (error) {
-        this.logger.error('Failed to create SFTP connection:', error);
-        this.pendingOperations--;
-        throw error;
-      }
-    }
-
-    if (!client) {
-      // Wait for a connection to become available
-      this.logger.debug('Waiting for an available SFTP connection');
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      this.pendingOperations--;
-      return this.getConnection();
-    }
-
-    this.inUse.add(client);
-    return client;
-  }
-
-  releaseConnection(client: SftpClient): void {
-    this.inUse.delete(client);
-    this.pendingOperations = Math.max(0, this.pendingOperations - 1);
-  }
-
-  async withConnection<T>(
-    operation: (client: SftpClient) => Promise<T>,
-  ): Promise<T> {
-    const client = await this.getConnection();
-    try {
-      return await operation(client);
-    } finally {
-      this.releaseConnection(client);
-    }
-  }
-
-  async closeAll(): Promise<void> {
-    // Wait for all operations to complete
-    while (this.pendingOperations > 0) {
-      this.logger.debug(
-        `Waiting for ${this.pendingOperations} operations to complete before closing connections`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-
-    for (const client of this.pool) {
-      try {
-        await client.end();
-      } catch (error) {
-        this.logger.warn('Error closing SFTP connection:', error);
-      }
-    }
-    this.pool = [];
-    this.inUse.clear();
-    this.logger.debug('Closed all SFTP connections');
-  }
-}
-
 @Injectable()
 export class FileManagementService {
   private readonly logger = new Logger(FileManagementService.name);
   private readonly projectPath: string;
-  private readonly vpsConfig: any;
-  private sftpPool: SftpConnectionPool;
+  private readonly storagePath: string;
   private readonly cpuCount: number;
 
   constructor(
     private configService: ConfigService,
     private jwtService: JwtService,
   ) {
-    this.projectPath = this.configService.get('storage').getProjectPath();
-    this.vpsConfig = this.configService.get('storage.vps');
+    this.storagePath = this.configService.get('storage.baseStorageDir');
+    this.projectPath = join(
+      this.storagePath,
+      this.configService.get('storage.projectName'),
+    );
 
     // Get CPU count for optimal threading
     this.cpuCount = os.cpus().length;
@@ -162,54 +63,36 @@ export class FileManagementService {
       ffmpeg.setFfmpegPath('/usr/bin/ffmpeg');
     }
 
-    // Create connection pool for SFTP
-    this.sftpPool = new SftpConnectionPool(this.vpsConfig, 3, this.logger);
-
     // Initialize storage directories
     this.initializeStorage();
-    // Setup security for the media directory
-    // this.setupMediaDirectorySecurity();
   }
 
-  private async initializeStorage() {
+  private initializeStorage() {
     try {
-      // Use the withConnection helper for cleaner code
-      await this.sftpPool.withConnection(async (sftp) => {
-        // Create and set permissions for the main directories
-        const basePath = this.vpsConfig.basePath;
-        const projectPath = `${basePath}/${this.configService.get('storage.projectName')}`;
-        const imagesPath = `${projectPath}/images`;
-        const videosPath = `${projectPath}/videos`;
-        const convertedPath = `${videosPath}/converted`;
+      const projectPath = this.projectPath;
+      const imagesPath = join(projectPath, 'images');
+      const videosPath = join(projectPath, 'videos');
+      const convertedPath = join(videosPath, 'converted');
 
-        const directories = [
-          basePath,
-          projectPath,
-          imagesPath,
-          videosPath,
-          convertedPath,
-        ];
+      const directories = [
+        this.storagePath,
+        projectPath,
+        imagesPath,
+        videosPath,
+        convertedPath,
+      ];
 
-        for (const dir of directories) {
-          try {
-            await sftp.mkdir(dir, true);
-            // Set proper permissions to prevent upload errors
-            try {
-              await sftp.chmod(dir, 0o777);
-            } catch (chmodError) {
-              this.logger.warn(
-                `Could not set permissions for ${dir}: ${chmodError.message}`,
-              );
-            }
-          } catch (err) {
-            if (!err.message?.includes('File exists')) {
-              this.logger.error(`Failed to create directory ${dir}:`, err);
-            }
-          }
+      for (const dir of directories) {
+        if (!existsSync(dir)) {
+          this.logger.log(`Creating directory: ${dir}`);
+          mkdirSync(dir, { recursive: true, mode: 0o777 });
         }
-      });
+      }
+
+      this.logger.log('Storage directories initialized successfully');
     } catch (error) {
-      this.logger.error('Failed to initialize storage:', error);
+      this.logger.error('Failed to initialize storage directories:', error);
+      throw new Error(`Failed to initialize storage: ${error.message}`);
     }
   }
 
@@ -276,9 +159,10 @@ export class FileManagementService {
         );
       }
 
-      if (file.size > config.maxSize) {
+      const maxSize = config.maxSize || 100 * 1024 * 1024; // Default 100MB if not specified
+      if (file.size > maxSize) {
         throw new BadRequestException(
-          `File ${file.originalname} too large. Maximum size: ${config.maxSize / 1024 / 1024}MB`,
+          `File ${file.originalname} too large. Maximum size: ${maxSize / 1024 / 1024}MB`,
         );
       }
 
@@ -288,21 +172,35 @@ export class FileManagementService {
           : this.generateFileName(file.originalname);
 
       if (type === 'images') {
+        // Process image (convert to webp and resize)
         processedFilePath = await this.processImage(file.path);
-        const relativePath = `${type}/${fileName}`;
-
-        try {
-          await this.uploadFileToVPS(
-            processedFilePath,
-            `${this.vpsConfig.basePath}/${relativePath}`,
-          );
-        } catch (error) {
-          throw new BadRequestException(
-            `Failed to upload file: ${error.message}`,
-          );
+        
+        // Define the destination path within the storage directory
+        const destinationPath = join(this.projectPath, type, fileName);
+        
+        // Ensure the directory exists
+        const dirPath = dirname(destinationPath);
+        if (!existsSync(dirPath)) {
+          mkdirSync(dirPath, { recursive: true });
         }
-
-        const fileStats = await statSync(processedFilePath);
+        
+        // Copy the processed file to the destination
+        copyFileSync(processedFilePath, destinationPath);
+        
+        // Set permissions
+        try {
+          const fs = require('fs');
+          fs.chmodSync(destinationPath, 0o644);
+        } catch (chmodError) {
+          this.logger.warn(`Could not set permissions for ${destinationPath}: ${chmodError.message}`);
+        }
+        
+        const fileStats = statSync(destinationPath);
+        const relativePath = `${type}/${fileName}`;
+        
+        // Clean up temporary processed file
+        await this.cleanupLocalFile(processedFilePath);
+        
         return {
           originalName: file.originalname,
           fileName: fileName,
@@ -311,10 +209,10 @@ export class FileManagementService {
           mimeType: 'image/webp',
         };
       } else {
-        // Process video and get the base path for HLS files
+        // Process video and generate HLS files
         const baseFileName = fileName.replace(/\.[^/.]+$/, '');
         await this.processVideo(file.path, fileName);
-
+        
         // For HLS streaming, return the path to the m3u8 file
         return {
           originalName: file.originalname,
@@ -351,19 +249,27 @@ export class FileManagementService {
   ): Promise<string> {
     const videoPath = localFilePath;
     const baseFileName = fileName.replace(/\.[^/.]+$/, ''); // Extract base filename
-    const outputDir = `${this.projectPath}/videos/converted/${baseFileName}`;
-
-    if (!existsSync(outputDir)) {
-      mkdirSync(outputDir, { recursive: true });
+    
+    // Temporary directory for processing
+    const tempOutputDir = join(os.tmpdir(), `video-processing-${Date.now()}`);
+    if (!existsSync(tempOutputDir)) {
+      mkdirSync(tempOutputDir, { recursive: true });
+    }
+    
+    // Final destination in the storage directory
+    const finalOutputDir = join(this.projectPath, 'videos', 'converted', baseFileName);
+    if (!existsSync(finalOutputDir)) {
+      mkdirSync(finalOutputDir, { recursive: true });
     }
 
     // Define master playlist path
-    const masterPlaylistPath = join(outputDir, `${baseFileName}.m3u8`);
+    const masterPlaylistPath = join(tempOutputDir, `${baseFileName}.m3u8`);
 
     // Mobile-optimized resolutions with 9:16 ratio
     const qualities = [
       { name: '720p', width: 720, height: 1280, bitrate: '2000k' },
       { name: '360p', width: 360, height: 640, bitrate: '800k' },
+      { name: '144p', width: 144, height: 256, bitrate: '200k' },
     ];
 
     // Optimize settings based on file size
@@ -384,7 +290,7 @@ export class FileManagementService {
       try {
         await new Promise<void>((resolve, reject) => {
           const variantOutputPath = join(
-            outputDir,
+            tempOutputDir,
             `${baseFileName}_${quality.name}.m3u8`,
           );
 
@@ -409,7 +315,7 @@ export class FileManagementService {
             .addOption('-hls_list_size', '0')
             .addOption(
               '-hls_segment_filename',
-              join(outputDir, `${baseFileName}_${quality.name}_%03d.ts`),
+              join(tempOutputDir, `${baseFileName}_${quality.name}_%03d.ts`),
             )
 
             // Output file path
@@ -452,7 +358,7 @@ export class FileManagementService {
 
     for (const quality of qualities) {
       const variantPath = join(
-        outputDir,
+        tempOutputDir,
         `${baseFileName}_${quality.name}.m3u8`,
       );
       if (existsSync(variantPath)) {
@@ -477,7 +383,7 @@ export class FileManagementService {
 
     try {
       // Find all generated files
-      const files = readdirSync(outputDir).filter((file) =>
+      const files = readdirSync(tempOutputDir).filter((file) =>
         /\.(m3u8|ts)$/.test(file),
       );
 
@@ -485,84 +391,47 @@ export class FileManagementService {
         throw new Error('No video files were generated during transcoding');
       }
 
-      // First upload the master playlist to ensure the directory structure is created
-      const masterPlaylistFile = `${baseFileName}.m3u8`;
-      const masterLocalPath = join(outputDir, masterPlaylistFile);
-      const masterRemotePath = join(
-        this.vpsConfig.basePath,
-        'videos',
-        'converted',
-        baseFileName,
-        masterPlaylistFile,
-      ).replace(/\\/g, '/');
-
-      await this.uploadFileToVPS(masterLocalPath, masterRemotePath, true);
-
-      // Now upload all variant playlists
-      const playlists = files.filter(
-        (file) => file.endsWith('.m3u8') && file !== masterPlaylistFile,
-      );
-
-      for (const file of playlists) {
+      // Move all files from temp directory to final destination
+      for (const file of files) {
+        const sourcePath = join(tempOutputDir, file);
+        const destPath = join(finalOutputDir, file);
+        
+        // Ensure destination directory exists
+        if (!existsSync(dirname(destPath))) {
+          mkdirSync(dirname(destPath), { recursive: true });
+        }
+        
+        // Copy the file to the destination
+        copyFileSync(sourcePath, destPath);
+        
+        // Set permissions
         try {
-          const localFilePath = join(outputDir, file);
-          const remoteFilePath = join(
-            this.vpsConfig.basePath,
-            'videos',
-            'converted',
-            baseFileName,
-            file,
-          ).replace(/\\/g, '/');
-
-          await this.uploadFileToVPS(localFilePath, remoteFilePath);
-        } catch (error) {
-          this.logger.error(`Failed to upload playlist ${file}:`, error);
+          const fs = require('fs');
+          fs.chmodSync(destPath, 0o644);
+        } catch (chmodError) {
+          this.logger.warn(`Could not set permissions for ${destPath}: ${chmodError.message}`);
         }
+        
+        // Clean up source file
+        await this.cleanupLocalFile(sourcePath);
       }
 
-      // Upload segments in smaller sequential batches
-      const segments = files.filter((file) => file.endsWith('.ts'));
-      const batchSize = 2; // Smaller batch size for stability
-
-      for (let i = 0; i < segments.length; i += batchSize) {
-        const batch = segments.slice(i, i + batchSize);
-
-        for (const file of batch) {
-          try {
-            const localFilePath = join(outputDir, file);
-            const remoteFilePath = join(
-              this.vpsConfig.basePath,
-              'videos',
-              'converted',
-              baseFileName,
-              file,
-            ).replace(/\\/g, '/');
-
-            await this.uploadFileToVPS(localFilePath, remoteFilePath);
-            await this.cleanupLocalFile(localFilePath);
-          } catch (error) {
-            this.logger.error(`Failed to upload segment ${file}:`, error);
-          }
-        }
-      }
-
-      // Clean up the entire output directory after all files are uploaded
-      this.logger.log(`Cleaning up local output directory: ${outputDir}`);
-      rimraf.sync(outputDir);
+      // Clean up the entire temp directory after all files are moved
+      this.logger.log(`Cleaning up temporary output directory: ${tempOutputDir}`);
+      rimraf.sync(tempOutputDir);
     } catch (error) {
-      this.logger.error(`Error during file upload: ${error.message}`);
-      // Clean up directory even on error
+      this.logger.error(`Error during file handling: ${error.message}`);
+      // Clean up temp directory even on error
       try {
-        rimraf.sync(outputDir);
+        rimraf.sync(tempOutputDir);
       } catch (e) {
-        this.logger.error(`Failed to clean up output directory: ${e.message}`);
+        this.logger.error(`Failed to clean up temp directory: ${e.message}`);
       }
     }
 
-    return masterPlaylistPath;
+    return join(finalOutputDir, `${baseFileName}.m3u8`);
   }
 
-  // Also let's update the image processing to stretch rather than pad
   private async processImage(localFilePath: string): Promise<string> {
     const webpPath = `${localFilePath}.webp`;
 
@@ -598,109 +467,6 @@ export class FileManagementService {
       throw new BadRequestException('Image processing failed');
     }
   }
-  private async uploadFileToVPS(
-    localPath: string,
-    remotePath: string,
-    ensureDir = false,
-  ): Promise<void> {
-    let retries = 3;
-    const normalizedRemotePath = remotePath.replace(/\\/g, '/');
-
-    this.logger.debug(
-      `Uploading from: ${localPath} to: ${normalizedRemotePath}`,
-    );
-
-    while (retries > 0) {
-      try {
-        // Use the withConnection helper to automatically manage the connection
-        await this.sftpPool.withConnection(async (sftp) => {
-          if (ensureDir) {
-            // Create directory structure recursively
-            const dirs = normalizedRemotePath.split('/').slice(0, -1); // Exclude filename
-            let currentPath = '';
-
-            for (const dir of dirs) {
-              if (!dir) continue; // Skip empty segments
-              currentPath += `/${dir}`;
-              try {
-                await sftp.mkdir(currentPath, true);
-                // Set directory permissions
-                try {
-                  await sftp.chmod(currentPath, 0o777);
-                } catch (chmodError) {
-                  this.logger.warn(
-                    `Could not set permissions for ${currentPath}: ${chmodError.message}`,
-                  );
-                }
-              } catch (err) {
-                if (!err.message?.includes('File exists')) {
-                  throw err;
-                }
-              }
-            }
-          }
-
-          // Check if local file exists before uploading
-          if (!existsSync(localPath)) {
-            throw new Error(`Local file not found: ${localPath}`);
-          }
-
-          // Upload the file
-          await sftp.fastPut(localPath, normalizedRemotePath);
-
-          // Set permissions for the uploaded file
-          try {
-            await sftp.chmod(normalizedRemotePath, 0o777);
-          } catch (chmodError) {
-            this.logger.warn(
-              `Could not set permissions for ${normalizedRemotePath}: ${chmodError.message}`,
-            );
-          }
-        });
-
-        this.logger.log(`File uploaded to VPS: ${normalizedRemotePath}`);
-        break;
-      } catch (error) {
-        retries--;
-        this.logger.error(
-          `VPS upload attempt failed (${retries} retries left):`,
-          error,
-        );
-        if (retries === 0) {
-          throw new BadRequestException(
-            'File upload to VPS failed after multiple attempts',
-          );
-        }
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-      }
-    }
-  }
-
-  // private async processImage(localFilePath: string): Promise<string> {
-  //   const webpPath = `${localFilePath}.webp`;
-
-  //   try {
-  //     await sharp(localFilePath)
-  //       .resize(1200, 1200, {
-  //         fit: 'inside',
-  //         withoutEnlargement: true,
-  //       })
-  //       .webp({
-  //         quality: 80,
-  //         effort: 4, // Slightly lower effort for faster processing
-  //       })
-  //       .toFile(webpPath);
-
-  //     // Clean up original file after processing
-  //     await this.cleanupLocalFile(localFilePath);
-
-  //     return webpPath;
-  //   } catch (error) {
-  //     this.logger.error(`Image processing failed: ${error.message}`);
-  //     await this.cleanupLocalFile(localFilePath);
-  //     throw new BadRequestException('Image processing failed');
-  //   }
-  // }
 
   private async cleanupLocalFile(filePath: string) {
     try {
@@ -731,72 +497,5 @@ export class FileManagementService {
     return `http://anycode-sy.com/media/${this.configService.get(
       'storage.projectName',
     )}/${relativePath}`;
-  }
-
-  // // Method to sign URLs with expiration time (optional)
-  // private signUrl(url: string, expirationMinutes = 60): string {
-  //   const expiryTime = Math.floor(Date.now() / 1000) + expirationMinutes * 60;
-  //   const token = this.jwtService.sign(
-  //     { exp: expiryTime },
-  //     { secret: this.configService.get('jwt.mediaSecret') },
-  //   );
-
-  //   // Add the token as a query parameter
-  //   return `${url}?token=${token}`;
-  // }
-  // private getPublicPath(relativePath: string): string {
-  //   const projectName = this.configService.get('storage.projectName');
-  //   const baseUrl = `http://anycode-sy.com/api/media/${projectName}/${relativePath}`;
-
-  //   // If you want to use signed URLs (more secure), uncomment this line:
-  //   return this.signUrl(baseUrl);
-
-  //   // For basic auth protection without signed URLs, use this:
-  //   // return baseUrl;
-  // }
-
-  // // Method to create .htaccess for securing the media directory
-  // private async setupMediaDirectorySecurity(): Promise<void> {
-  //   try {
-  //     await this.sftpPool.withConnection(async () => {
-  //       const basePath = this.vpsConfig.basePath;
-  //       const htaccessContent = `
-  //           # Deny direct access to media files
-  //           <IfModule mod_rewrite.c>
-  //             RewriteEngine On
-  //             RewriteCond %{REQUEST_URI} ^/media/
-  //             RewriteCond %{HTTP_REFERER} !^http://(www\\.)?anycode-sy\\.com/ [NC]
-  //             RewriteRule .* - [F,L]
-  //           </IfModule>
-
-  //           # Deny access to all
-  //           <IfModule !mod_rewrite.c>
-  //             Order deny,allow
-  //             Deny from all
-  //           </IfModule>
-  //       `;
-  //       // Write .htaccess file to the media directory
-  //       const tempPath = join(this.projectPath, '.htaccess.tmp');
-  //       writeFileSync(tempPath, htaccessContent);
-
-  //       await this.uploadFileToVPS(tempPath, `${basePath}/.htaccess`, true);
-  //       await unlinkAsync(tempPath).catch((err) =>
-  //         this.logger.warn(
-  //           `Failed to delete temporary .htaccess file: ${err.message}`,
-  //         ),
-  //       );
-
-  //       this.logger.log('Media directory security setup completed');
-  //     });
-  //   } catch (error) {
-  //     this.logger.error(
-  //       `Failed to setup media directory security: ${error.message}`,
-  //     );
-  //   }
-  // }
-
-  async onApplicationShutdown() {
-    // Close all SFTP connections when the application shuts down
-    await this.sftpPool.closeAll();
   }
 }

@@ -4,6 +4,8 @@ import * as cookieParser from 'cookie-parser';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { config } from 'dotenv';
 
+
+
 async function bootstrap() {
   // Initialize logger
   const logger = new Logger('Bootstrap');
@@ -16,7 +18,7 @@ async function bootstrap() {
     logger: ['error', 'warn', 'debug', 'log', 'verbose'],
   });
 
-  app.setGlobalPrefix('api');
+  app.setGlobalPrefix('reel-win/api');
 
   app.useGlobalPipes(
     new ValidationPipe({
