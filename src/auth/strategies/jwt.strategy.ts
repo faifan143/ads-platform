@@ -1,40 +1,20 @@
 // src/auth/strategies/jwt.strategy.ts
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
-import { Strategy, ExtractJwt } from 'passport-jwt';
-import { Request } from 'express';
-import { PrismaService } from '../../prisma/prisma.service';
+import { ExtractJwt, Strategy } from 'passport-jwt';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private prisma: PrismaService) {
+  constructor() {
     super({
-      jwtFromRequest: ExtractJwt.fromExtractors([
-        (request: Request) => {
-          console.log('Request cookies:', request.cookies);
-          console.log('Headers:', request.headers);
-          return request?.cookies?.['token'];
-        },
-      ]),
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ignoreExpiration: false,
       secretOrKey: process.env.JWT_SECRET,
     });
   }
 
-  async validate(payload: { sub: string; email: string }) {
-    console.log('JWT Payload:', payload);
-
-    if (!payload) {
-      throw new UnauthorizedException('Invalid or missing JWT payload');
-    }
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-    });
-
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
-
-    delete user.password;
-    return user;
+  async validate(payload: any) {
+    // Return the user object that will be attached to the request
+    return { id: payload.sub, phone: payload.phone };
   }
 }

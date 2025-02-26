@@ -49,6 +49,7 @@ export class AuthService {
           'Invalid date format. Please use YYYY-MM-DD format',
         );
       }
+
       // Add age validation
       const age = Math.floor(
         (Date.now() - dateOfBirth.getTime()) / (1000 * 60 * 60 * 24 * 365.25),
@@ -145,7 +146,9 @@ export class AuthService {
     return { token, user };
   }
 
-  async generateToken(userId: string, phone: string) {
-    return this.jwtService.sign({ sub: userId, phone }, { expiresIn: '7d' });
+  // In your AuthService
+  async generateToken(userId: string, phone: string): Promise<string> {
+    const payload = { sub: userId, phone };
+    return this.jwtService.sign(payload);
   }
 }

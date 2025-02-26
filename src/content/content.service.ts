@@ -175,7 +175,7 @@ export class ContentService {
     const age = today.getFullYear() - birthDate.getFullYear();
 
     // Find content matching user's demographics
-    return this.prisma.content.findMany({
+    const relevantContent = await this.prisma.content.findMany({
       where: {
         // Content that's still valid
         endValidationDate: {
@@ -196,37 +196,83 @@ export class ContentService {
         },
       },
       include: {
-        interests: true,
-        likedBy: true,
-        viewedBy: true,
-        whatsappedBy: true,
+        interests: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        _count: {
+          select: {
+            likedBy: true,
+            viewedBy: true,
+            whatsappedBy: true,
+          },
+        },
       },
       orderBy: {
         createdAt: 'desc',
       },
     });
+
+    // If no relevant content found, get any valid content
+    if (relevantContent.length === 0) {
+      return this.prisma.content.findMany({
+        where: {
+          endValidationDate: {
+            gte: new Date(),
+          },
+        },
+        include: {
+          interests: true,
+          _count: {
+            select: {
+              likedBy: true,
+              viewedBy: true,
+              whatsappedBy: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
+    }
+
+    return relevantContent;
   }
-
+  /**
+   * Records when a user views content and awards points
+   */
   async markAsViewed(contentId: string, userId: string) {
-    // Check if content exists
-    await this.findOne(contentId);
+    // Check if both content and user exist at the same time to reduce database calls
+    const [content, user] = await Promise.all([
+      this.prisma.content.findUnique({ where: { id: contentId } }),
+      this.prisma.user.findUnique({ where: { id: userId } }),
+    ]);
 
-    // Check if user exists
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
+    if (!content) {
+      throw new NotFoundException(`Content with ID "${contentId}" not found`);
+    }
 
     if (!user) {
       throw new NotFoundException(`User with ID "${userId}" not found`);
     }
+
+    // Check if user has already viewed this content
+    const existingView = await this.prisma.userContent.findUnique({
+      where: {
+        userId_contentId: { userId, contentId },
+      },
+    });
+
+    // Only award points if it's a new view
+    const shouldAwardPoints = !existingView;
 
     // Create or update the view record
     await this.prisma.userContent.upsert({
       where: {
-        userId_contentId: {
-          userId,
-          contentId,
-        },
+        userId_contentId: { userId, contentId },
       },
       update: {
         viewedAt: new Date(),
@@ -237,37 +283,110 @@ export class ContentService {
         viewedAt: new Date(),
       },
     });
-  }
-  async addLike(contentId: string, userId: string) {
-    // Check if content exists
-    await this.findOne(contentId);
 
-    // Check if user exists
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
+    // Award points to user if this is a new view
+    if (shouldAwardPoints) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          points: {
+            increment: 2,
+          },
+        },
+      });
+
+      return {
+        success: true,
+        message: 'Content marked as viewed and 2 point awarded',
+        pointsAwarded: 2,
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Content marked as viewed',
+      pointsAwarded: 0,
+    };
+  }
+
+  /**
+   * Toggles a like on content - if already liked, removes the like;
+   * if not liked, adds a like and awards points
+   */
+  async addLike(contentId: string, userId: string) {
+    // Check if both content and user exist at the same time
+    const [content, user] = await Promise.all([
+      this.prisma.content.findUnique({ where: { id: contentId } }),
+      this.prisma.user.findUnique({ where: { id: userId } }),
+    ]);
+
+    if (!content) {
+      throw new NotFoundException(`Content with ID "${contentId}" not found`);
+    }
 
     if (!user) {
       throw new NotFoundException(`User with ID "${userId}" not found`);
     }
 
-    // Create or update the view record
-    await this.prisma.userContentLike.upsert({
+    // Check if user has already liked this content
+    const existingLike = await this.prisma.userContentLike.findUnique({
       where: {
-        userId_contentId: {
-          userId,
-          contentId,
+        userId_contentId: { userId, contentId },
+      },
+    });
+
+    // If the content is already liked, remove the like
+    if (existingLike) {
+      await this.prisma.userContentLike.delete({
+        where: {
+          userId_contentId: { userId, contentId },
         },
-      },
-      update: {
-        likedAt: new Date(),
-      },
-      create: {
+      });
+
+      // Subtract points when unliking (optional - depends on your business logic)
+      // If you don't want to subtract points when unliking, remove this block
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          points: {
+            decrement: 1, // Subtract 1 points for unliking
+          },
+        },
+      });
+
+      return {
+        success: true,
+        action: 'unliked',
+        message: 'Like removed from content',
+        pointsChange: -1,
+      };
+    }
+
+    // If not liked yet, add a like
+    await this.prisma.userContentLike.create({
+      data: {
         userId,
         contentId,
         likedAt: new Date(),
       },
     });
+
+    // Award points to user for liking content
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        points: {
+          increment: 1, // Add 1 points for liking
+        },
+      },
+    });
+
+    return {
+      success: true,
+      action: 'liked',
+      message: 'Content liked successfully',
+      pointsChange: 1,
+    };
   }
 
   async getWhatsAppLink(contentId: string, userId: string) {

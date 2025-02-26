@@ -21,14 +21,18 @@ import { ContentService } from './content.service';
 import { ContentDto } from './dtos/content.dto/content.dto';
 import { FindAllContentDto } from './dtos/find-all-content.dto/find-all-content.dto';
 import { UpdateContentDto } from './dtos/update-content.dto/update-content.dto';
+import { AdminGuard } from 'src/auth/guards/admin.guard';
+import { Admin } from 'src/auth/decorators/admin.decorator';
 
 @Controller('content')
+@UseGuards(JwtAuthGuard)
 export class ContentController {
   constructor(private readonly contentService: ContentService) {}
 
   @Post()
   @UseInterceptors(FilesInterceptor('files'))
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(AdminGuard)
+  @Admin()
   create(
     @UploadedFiles() files: Array<Express.Multer.File>,
     @Body() contentDto: Omit<ContentDto, 'mediaUrls'>,
@@ -47,20 +51,22 @@ export class ContentController {
   }
 
   @Patch(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(AdminGuard)
+  @Admin()
   update(@Param('id') id: string, @Body() updateContentDto: UpdateContentDto) {
     return this.contentService.update(id, updateContentDto);
   }
 
   @Delete(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(AdminGuard)
+  @Admin()
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id') id: string) {
     return this.contentService.remove(id);
   }
 
   //   user interactions
-  @Post(':id/like')
+  @Get(':id/like')
   @UseGuards(JwtAuthGuard)
   addLike(@Param('id') id: string, @CurrentUser() user: CurrentUserType) {
     return this.contentService.addLike(id, user.id);
@@ -72,7 +78,7 @@ export class ContentController {
     return this.contentService.findRelevantForUser(user.id);
   }
 
-  @Post(':id/view')
+  @Get(':id/view')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   markAsViewed(@Param('id') id: string, @CurrentUser() user: CurrentUserType) {

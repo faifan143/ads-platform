@@ -354,11 +354,10 @@ export class FileManagementService {
     // Define master playlist path
     const masterPlaylistPath = join(outputDir, `${baseFileName}.m3u8`);
 
-    // Define quality variants - reduced to just two for faster processing
+    // Mobile-optimized resolutions with 9:16 ratio
     const qualities = [
-      { name: '720p', resolution: '1280x720', bitrate: '2000k' },
-      { name: '360p', resolution: '640x360', bitrate: '800k' },
-      { name: '144p', resolution: '256x144', bitrate: '200k' },
+      { name: '720p', width: 720, height: 1280, bitrate: '2000k' },
+      { name: '360p', width: 360, height: 640, bitrate: '800k' },
     ];
 
     // Optimize settings based on file size
@@ -371,53 +370,49 @@ export class FileManagementService {
     const crf = fileSizeMB < 20 ? 28 : 26;
 
     this.logger.log(
-      `Video size: ${fileSizeMB.toFixed(2)}MB, using preset: ${preset}, CRF: ${crf}`,
+      `Video size: ${fileSizeMB.toFixed(2)}MB, processing to mobile-optimized 9:16 ratio`,
     );
 
-    // Create variant outputs concurrently for faster processing
-    await Promise.all(
-      qualities.map(async (quality) => {
-        return new Promise<void>((resolve, reject) => {
+    // Process each quality variant sequentially
+    for (const quality of qualities) {
+      try {
+        await new Promise<void>((resolve, reject) => {
           const variantOutputPath = join(
             outputDir,
             `${baseFileName}_${quality.name}.m3u8`,
           );
 
+          // Force resize to exact dimensions without maintaining aspect ratio (will stretch)
+          const scaleFilter = `scale=${quality.width}:${quality.height}:force_original_aspect_ratio=disable`;
+
           ffmpeg(videoPath)
-            // Speed optimization: Use faster preset and tune for speed
+            // Basic settings only
             .addOption('-preset', preset)
-            .addOption('-tune', 'fastdecode')
-            // Use a higher CRF for faster encoding (higher number = lower quality but faster)
             .addOption('-crf', crf.toString())
-            // Other necessary options
-            .addOption('-profile:v', 'main')
-            .addOption('-sc_threshold', '0')
-            .addOption('-g', '48')
-            .addOption('-keyint_min', '48')
-            // Output settings
-            .output(variantOutputPath)
-            .addOption('-vf', `scale=${quality.resolution.replace('x', ':')}`)
-            .addOption('-b:v', quality.bitrate)
-            .addOption('-maxrate', `${parseInt(quality.bitrate) * 1.5}k`)
-            .addOption('-bufsize', `${parseInt(quality.bitrate) * 3}k`) // Increased buffer size
+
+            // Force the video to stretch to the exact dimensions
+            .addOption('-vf', scaleFilter)
+
+            // Video and audio codecs
             .addOption('-c:v', 'libx264')
             .addOption('-c:a', 'aac')
             .addOption('-b:a', '128k')
-            // Increase segment duration for fewer segments
-            .addOption('-hls_time', '10') // Longer segments = fewer files
+
+            // HLS settings
+            .addOption('-hls_time', '10')
             .addOption('-hls_list_size', '0')
-            .addOption('-hls_playlist_type', 'vod')
             .addOption(
               '-hls_segment_filename',
               join(outputDir, `${baseFileName}_${quality.name}_%03d.ts`),
             )
-            // Thread optimization - use half of available cores for each stream
-            // to allow parallel processing of multiple qualities
-            .addOption(
-              '-threads',
-              Math.max(1, Math.floor(this.cpuCount / 2)).toString(),
-            )
-            // Progress and completion handlers
+
+            // Output file path
+            .output(variantOutputPath)
+
+            // Event handlers
+            .on('start', (cmdline) => {
+              this.logger.debug(`FFmpeg command: ${cmdline}`);
+            })
             .on('progress', (progress) => {
               const percent = progress.percent
                 ? Number(progress.percent).toFixed(2)
@@ -437,20 +432,39 @@ export class FileManagementService {
             })
             .run();
         });
-      }),
-    );
+      } catch (error) {
+        this.logger.error(
+          `Failed to process ${quality.name} variant: ${error.message}`,
+        );
+        // Continue with next quality
+      }
+    }
 
-    // Create master playlist
+    // Create master playlist only with successfully created variants
     let masterContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
-    qualities.forEach((quality) => {
-      const bandwidth = parseInt(quality.bitrate) * 1000;
-      const resolution = quality.resolution;
-      masterContent += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${resolution},NAME="${quality.name}"\n`;
-      masterContent += `${baseFileName}_${quality.name}.m3u8\n`;
-    });
+    let hasSuccessfulVariant = false;
 
-    // Write master playlist
-    writeFileSync(masterPlaylistPath, masterContent);
+    for (const quality of qualities) {
+      const variantPath = join(
+        outputDir,
+        `${baseFileName}_${quality.name}.m3u8`,
+      );
+      if (existsSync(variantPath)) {
+        const bandwidth = parseInt(quality.bitrate) * 1000;
+        masterContent += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${quality.width}x${quality.height},NAME="${quality.name}"\n`;
+        masterContent += `${baseFileName}_${quality.name}.m3u8\n`;
+        hasSuccessfulVariant = true;
+      }
+    }
+
+    // Only write master playlist if at least one variant was successfully created
+    if (hasSuccessfulVariant) {
+      writeFileSync(masterPlaylistPath, masterContent);
+    } else {
+      throw new BadRequestException(
+        'Failed to process video into any quality variant',
+      );
+    }
 
     // Clean up the original uploaded file
     await this.cleanupLocalFile(localFilePath);
@@ -460,6 +474,10 @@ export class FileManagementService {
       const files = readdirSync(outputDir).filter((file) =>
         /\.(m3u8|ts)$/.test(file),
       );
+
+      if (files.length === 0) {
+        throw new Error('No video files were generated during transcoding');
+      }
 
       // First upload the master playlist to ensure the directory structure is created
       const masterPlaylistFile = `${baseFileName}.m3u8`;
@@ -474,12 +492,13 @@ export class FileManagementService {
 
       await this.uploadFileToVPS(masterLocalPath, masterRemotePath, true);
 
-      // Now upload all variant playlists first (they're small)
+      // Now upload all variant playlists
       const playlists = files.filter(
         (file) => file.endsWith('.m3u8') && file !== masterPlaylistFile,
       );
-      await Promise.all(
-        playlists.map((file) => {
+
+      for (const file of playlists) {
+        try {
           const localFilePath = join(outputDir, file);
           const remoteFilePath = join(
             this.vpsConfig.basePath,
@@ -489,21 +508,21 @@ export class FileManagementService {
             file,
           ).replace(/\\/g, '/');
 
-          return this.uploadFileToVPS(localFilePath, remoteFilePath);
-        }),
-      );
+          await this.uploadFileToVPS(localFilePath, remoteFilePath);
+        } catch (error) {
+          this.logger.error(`Failed to upload playlist ${file}:`, error);
+        }
+      }
 
-      // Now upload all segments in batches to prevent overwhelming the connection
+      // Upload segments in smaller sequential batches
       const segments = files.filter((file) => file.endsWith('.ts'));
-      const batchSize = 3; // Smaller batch size to prevent too many concurrent connections
+      const batchSize = 2; // Smaller batch size for stability
 
-      // Process segments in sequential batches to prevent connection issues
       for (let i = 0; i < segments.length; i += batchSize) {
         const batch = segments.slice(i, i + batchSize);
 
-        // Upload each batch with controlled parallelism
-        await Promise.all(
-          batch.map(async (file) => {
+        for (const file of batch) {
+          try {
             const localFilePath = join(outputDir, file);
             const remoteFilePath = join(
               this.vpsConfig.basePath,
@@ -513,16 +532,12 @@ export class FileManagementService {
               file,
             ).replace(/\\/g, '/');
 
-            try {
-              await this.uploadFileToVPS(localFilePath, remoteFilePath);
-              // Clean up immediately after successful upload
-              await this.cleanupLocalFile(localFilePath);
-            } catch (error) {
-              this.logger.error(`Failed to upload segment ${file}:`, error);
-              throw error;
-            }
-          }),
-        );
+            await this.uploadFileToVPS(localFilePath, remoteFilePath);
+            await this.cleanupLocalFile(localFilePath);
+          } catch (error) {
+            this.logger.error(`Failed to upload segment ${file}:`, error);
+          }
+        }
       }
 
       // Clean up the entire output directory after all files are uploaded
@@ -530,11 +545,53 @@ export class FileManagementService {
       rimraf.sync(outputDir);
     } catch (error) {
       this.logger.error(`Error during file upload: ${error.message}`);
+      // Clean up directory even on error
+      try {
+        rimraf.sync(outputDir);
+      } catch (e) {
+        this.logger.error(`Failed to clean up output directory: ${e.message}`);
+      }
     }
 
     return masterPlaylistPath;
   }
 
+  // Also let's update the image processing to stretch rather than pad
+  private async processImage(localFilePath: string): Promise<string> {
+    const webpPath = `${localFilePath}.webp`;
+
+    try {
+      // Mobile-optimized dimensions (9:16 ratio)
+      const targetWidth = 720;
+      const targetHeight = 1280;
+
+      this.logger.log(
+        `Processing image to mobile-optimized 9:16 aspect ratio (${targetWidth}x${targetHeight})`,
+      );
+
+      // Resize the image to exactly fit the target dimensions (will stretch)
+      await sharp(localFilePath)
+        .resize({
+          width: targetWidth,
+          height: targetHeight,
+          fit: 'fill', // This forces the exact dimensions without preserving aspect ratio
+        })
+        .webp({
+          quality: 80,
+          effort: 4,
+        })
+        .toFile(webpPath);
+
+      // Clean up original file after processing
+      await this.cleanupLocalFile(localFilePath);
+
+      return webpPath;
+    } catch (error) {
+      this.logger.error(`Image processing failed: ${error.message}`);
+      await this.cleanupLocalFile(localFilePath);
+      throw new BadRequestException('Image processing failed');
+    }
+  }
   private async uploadFileToVPS(
     localPath: string,
     remotePath: string,
@@ -613,31 +670,31 @@ export class FileManagementService {
     }
   }
 
-  private async processImage(localFilePath: string): Promise<string> {
-    const webpPath = `${localFilePath}.webp`;
+  // private async processImage(localFilePath: string): Promise<string> {
+  //   const webpPath = `${localFilePath}.webp`;
 
-    try {
-      await sharp(localFilePath)
-        .resize(1200, 1200, {
-          fit: 'inside',
-          withoutEnlargement: true,
-        })
-        .webp({
-          quality: 80,
-          effort: 4, // Slightly lower effort for faster processing
-        })
-        .toFile(webpPath);
+  //   try {
+  //     await sharp(localFilePath)
+  //       .resize(1200, 1200, {
+  //         fit: 'inside',
+  //         withoutEnlargement: true,
+  //       })
+  //       .webp({
+  //         quality: 80,
+  //         effort: 4, // Slightly lower effort for faster processing
+  //       })
+  //       .toFile(webpPath);
 
-      // Clean up original file after processing
-      await this.cleanupLocalFile(localFilePath);
+  //     // Clean up original file after processing
+  //     await this.cleanupLocalFile(localFilePath);
 
-      return webpPath;
-    } catch (error) {
-      this.logger.error(`Image processing failed: ${error.message}`);
-      await this.cleanupLocalFile(localFilePath);
-      throw new BadRequestException('Image processing failed');
-    }
-  }
+  //     return webpPath;
+  //   } catch (error) {
+  //     this.logger.error(`Image processing failed: ${error.message}`);
+  //     await this.cleanupLocalFile(localFilePath);
+  //     throw new BadRequestException('Image processing failed');
+  //   }
+  // }
 
   private async cleanupLocalFile(filePath: string) {
     try {
