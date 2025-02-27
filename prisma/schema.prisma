@@ -85,7 +85,7 @@ model Content {
   intervalHours     Int
   endValidationDate DateTime
   gem               ContentGem?
-  mediaUrls         Json[]
+  mediaUrls         Json
   interests         Interest[]            @relation("InterestContent")
   viewedBy          UserContent[]
   likedBy           UserContentLike[]
