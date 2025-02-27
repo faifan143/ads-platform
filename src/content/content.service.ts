@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -8,7 +9,7 @@ import { ContentDto } from './dtos/content.dto/content.dto';
 import { FindAllContentDto } from './dtos/find-all-content.dto/find-all-content.dto';
 import { UpdateContentDto } from './dtos/update-content.dto/update-content.dto';
 import { FileManagementService } from 'src/file-management/file-management.service';
-
+import { Logger } from '@nestjs/common';
 @Injectable()
 export class ContentService {
   constructor(
@@ -185,186 +186,277 @@ export class ContentService {
       where: { id },
     });
   }
-
   async findRelevantForUser(userId: string, page = 1, pageSize = 10) {
-    // Validate pagination parameters
-    if (page < 1) page = 1;
-    if (pageSize < 1) pageSize = 10;
+    console.log(userId);
 
+    try {
+      // Validate pagination parameters
+      if (page < 1) page = 1;
+      if (pageSize < 1) pageSize = 10;
+
+      // Calculate pagination values
+      const skip = (page - 1) * pageSize;
+      const take = pageSize;
+
+      // Get user details
+      let user;
+      try {
+        user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            gender: true,
+            dateOfBirth: true,
+            providence: true,
+          },
+        });
+      } catch (error) {
+        Logger.error(
+          `Database error while fetching user: ${error.message}`,
+          error.stack,
+        );
+        throw new InternalServerErrorException(
+          'Failed to fetch user information',
+        );
+      }
+
+      if (!user) {
+        throw new NotFoundException(`User with ID "${userId}" not found`);
+      }
+
+      // Calculate age from date of birth
+      const today = new Date();
+      const birthDate = new Date(user.dateOfBirth);
+      const age = today.getFullYear() - birthDate.getFullYear();
+
+      // Define the where clause for relevant content
+      const whereClause = {
+        // Content that's still valid
+        endValidationDate: {
+          gte: new Date(),
+        },
+        // Content matching user's interests by age and gender
+        interests: {
+          some: {
+            OR: [
+              { targetedGender: null }, // For all genders
+              { targetedGender: user.gender }, // For specific gender
+            ],
+            AND: [
+              { minAge: { lte: age } }, // User age greater than min age
+              { maxAge: { gte: age } }, // User age less than max age
+            ],
+          },
+        },
+      };
+
+      // Get total count and viewed/liked content IDs with error handling
+      let totalCount, viewedContent, likedContent;
+
+      try {
+        // Execute queries in parallel for better performance
+        [totalCount, viewedContent, likedContent] = await Promise.all([
+          this.prisma.content.count({
+            where: whereClause,
+          }),
+          this.prisma.userContent.findMany({
+            where: { userId },
+            select: { contentId: true },
+          }),
+          this.prisma.userContentLike.findMany({
+            where: { userId },
+            select: { contentId: true },
+          }),
+        ]);
+      } catch (error) {
+        Logger.error(
+          `Database error while fetching content metadata: ${error.message}`,
+          error.stack,
+        );
+        throw new InternalServerErrorException(
+          'Failed to fetch content information',
+        );
+      }
+
+      // Extract the content IDs into arrays
+      const viewedContentIds = viewedContent.map((item) => item.contentId);
+      const likedContentIds = likedContent.map((item) => item.contentId);
+
+      // Fetch unwatched and watched content with error handling
+      let unwatchedContent, watchedContent;
+
+      try {
+        // Fetch unwatched content
+        unwatchedContent = await this.prisma.content.findMany({
+          where: {
+            ...whereClause,
+            NOT: { id: { in: viewedContentIds } },
+          },
+          include: {
+            interests: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            _count: {
+              select: {
+                likedBy: true,
+                viewedBy: true,
+                whatsappedBy: true,
+              },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+      } catch (error) {
+        Logger.error(
+          `Database error while fetching unwatched content: ${error.message}`,
+          error.stack,
+        );
+        unwatchedContent = [];
+      }
+
+      try {
+        // Fetch watched content
+        watchedContent = await this.prisma.content.findMany({
+          where: {
+            ...whereClause,
+            id: { in: viewedContentIds },
+          },
+          include: {
+            interests: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+            _count: {
+              select: {
+                likedBy: true,
+                viewedBy: true,
+                whatsappedBy: true,
+              },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+      } catch (error) {
+        Logger.error(
+          `Database error while fetching watched content: ${error.message}`,
+          error.stack,
+        );
+        watchedContent = [];
+      }
+
+      // Add isLiked and isWatched properties
+      const unwatchedWithFlags = unwatchedContent.map((content) => ({
+        ...content,
+        isLiked: likedContentIds.includes(content.id),
+        isWatched: false,
+      }));
+
+      const watchedWithFlags = watchedContent.map((content) => ({
+        ...content,
+        isLiked: likedContentIds.includes(content.id),
+        isWatched: true,
+      }));
+
+      // Merge and paginate content
+      const mergedContent = [...unwatchedWithFlags, ...watchedWithFlags];
+      const relevantContent = mergedContent.slice(skip, skip + take);
+
+      // Handle fallback when no relevant content found
+      if (relevantContent.length === 0) {
+        try {
+          return await this.getFallbackContent(
+            userId,
+            likedContentIds,
+            page,
+            pageSize,
+          );
+        } catch (fallbackError) {
+          Logger.error(
+            `Error getting fallback content: ${fallbackError.message}`,
+            fallbackError.stack,
+          );
+          // Even if fallback fails, return empty data with pagination info
+          return {
+            data: [],
+            meta: {
+              currentPage: page,
+              itemsPerPage: pageSize,
+              totalItems: 0,
+              totalPages: 0,
+              hasNextPage: false,
+              hasPreviousPage: page > 1,
+            },
+            isRelevant: false,
+          };
+        }
+      }
+
+      // Return the paginated content with pagination metadata
+      return {
+        data: relevantContent,
+        meta: {
+          currentPage: page,
+          itemsPerPage: pageSize,
+          totalItems: totalCount,
+          totalPages: Math.ceil(totalCount / pageSize),
+          hasNextPage: page < Math.ceil(totalCount / pageSize),
+          hasPreviousPage: page > 1,
+        },
+        isRelevant: true,
+      };
+    } catch (error) {
+      // Global error handler for the entire method
+      Logger.error(
+        `Error in findRelevantForUser: ${error.message}`,
+        error.stack,
+      );
+
+      if (error instanceof NotFoundException) {
+        throw error; // Rethrow NotFoundExceptions as they're already properly formatted
+      }
+
+      if (error instanceof InternalServerErrorException) {
+        throw error; // Rethrow InternalServerErrorExceptions as they're already properly formatted
+      }
+
+      // Handle any other unexpected errors
+      throw new InternalServerErrorException(
+        'An unexpected error occurred while fetching relevant content',
+      );
+    }
+  }
+
+  // Extract fallback content logic to a separate method for better organization
+  private async getFallbackContent(
+    userId: string,
+    likedContentIds: string[],
+    page: number,
+    pageSize: number,
+  ) {
     // Calculate pagination values
     const skip = (page - 1) * pageSize;
     const take = pageSize;
 
-    // Get user details
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        gender: true,
-        dateOfBirth: true,
-        providence: true,
-      },
-    });
-
-    if (!user) {
-      throw new NotFoundException(`User with ID "${userId}" not found`);
-    }
-
-    // Calculate age from date of birth
-    const today = new Date();
-    const birthDate = new Date(user.dateOfBirth);
-    const age = today.getFullYear() - birthDate.getFullYear();
-
-    // Define the where clause for relevant content
-    const whereClause = {
-      // Content that's still valid
+    const fallbackWhereClause = {
       endValidationDate: {
         gte: new Date(),
       },
-      // Content matching user's interests by age and gender
-      interests: {
-        some: {
-          OR: [
-            { targetedGender: null }, // For all genders
-            { targetedGender: user.gender }, // For specific gender
-          ],
-          AND: [
-            { minAge: { lte: age } }, // User age greater than min age
-            { maxAge: { gte: age } }, // User age less than max age
-          ],
-        },
-      },
     };
 
-    // Get total count of relevant content for pagination metadata
-    const totalCount = await this.prisma.content.count({
-      where: whereClause,
-    });
-
-    // Get all content IDs that the user has already viewed
-    const viewedContent = await this.prisma.userContent.findMany({
-      where: {
-        userId: userId,
-      },
-      select: {
-        contentId: true,
-      },
-    });
-
-    // Get all content IDs that the user has already liked
-    const likedContent = await this.prisma.userContentLike.findMany({
-      where: {
-        userId: userId,
-      },
-      select: {
-        contentId: true,
-      },
-    });
-
-    // Extract the content IDs into arrays
-    const viewedContentIds = viewedContent.map((item) => item.contentId);
-    const likedContentIds = likedContent.map((item) => item.contentId);
-
-    // First, get unwatched content
-    const unwatchedContent = await this.prisma.content.findMany({
-      where: {
-        ...whereClause,
-        // Exclude content that has been viewed by the user
-        NOT: {
-          id: {
-            in: viewedContentIds,
-          },
-        },
-      },
-      include: {
-        interests: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        _count: {
-          select: {
-            likedBy: true,
-            viewedBy: true,
-            whatsappedBy: true,
-          },
-        },
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
-
-    // Then, get watched content
-    const watchedContent = await this.prisma.content.findMany({
-      where: {
-        ...whereClause,
-        // Only include content that has been viewed by the user
-        id: {
-          in: viewedContentIds,
-        },
-      },
-      include: {
-        interests: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        _count: {
-          select: {
-            likedBy: true,
-            viewedBy: true,
-            whatsappedBy: true,
-          },
-        },
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
-
-    // Add isLiked and isWatched properties to unwatched content
-    const unwatchedWithFlags = unwatchedContent.map((content) => ({
-      ...content,
-      isLiked: likedContentIds.includes(content.id),
-      isWatched: false, // By definition, unwatched content has isWatched = false
-    }));
-
-    // Add isLiked and isWatched properties to watched content
-    const watchedWithFlags = watchedContent.map((content) => ({
-      ...content,
-      isLiked: likedContentIds.includes(content.id),
-      isWatched: true, // By definition, watched content has isWatched = true
-    }));
-
-    // Merge unwatched and watched content, prioritizing unwatched
-    const mergedContent = [...unwatchedWithFlags, ...watchedWithFlags];
-
-    // Apply pagination after merging
-    const relevantContent = mergedContent.slice(skip, skip + take);
-
-    // If no relevant content found, get any valid content with pagination
-    if (relevantContent.length === 0) {
-      const fallbackWhereClause = {
-        endValidationDate: {
-          gte: new Date(),
-        },
-      };
-
+    try {
       // Get total count for fallback content
       const fallbackTotalCount = await this.prisma.content.count({
         where: fallbackWhereClause,
       });
 
-      // Get all content IDs that the user has already viewed
+      // Get viewed content IDs
       const viewedFallbackContent = await this.prisma.userContent.findMany({
-        where: {
-          userId: userId,
-        },
-        select: {
-          contentId: true,
-        },
+        where: { userId },
+        select: { contentId: true },
       });
 
       // Extract the content IDs into an array
@@ -372,16 +464,11 @@ export class ContentService {
         (item) => item.contentId,
       );
 
-      // First, get unwatched fallback content
+      // Get unwatched fallback content
       const unwatchedFallbackContent = await this.prisma.content.findMany({
         where: {
           ...fallbackWhereClause,
-          // Exclude content that has been viewed by the user
-          NOT: {
-            id: {
-              in: viewedFallbackContentIds,
-            },
-          },
+          NOT: { id: { in: viewedFallbackContentIds } },
         },
         include: {
           interests: true,
@@ -393,19 +480,14 @@ export class ContentService {
             },
           },
         },
-        orderBy: {
-          createdAt: 'desc',
-        },
+        orderBy: { createdAt: 'desc' },
       });
 
-      // Then, get watched fallback content
+      // Get watched fallback content
       const watchedFallbackContent = await this.prisma.content.findMany({
         where: {
           ...fallbackWhereClause,
-          // Only include content that has been viewed by the user
-          id: {
-            in: viewedFallbackContentIds,
-          },
+          id: { in: viewedFallbackContentIds },
         },
         include: {
           interests: true,
@@ -417,36 +499,31 @@ export class ContentService {
             },
           },
         },
-        orderBy: {
-          createdAt: 'desc',
-        },
+        orderBy: { createdAt: 'desc' },
       });
 
-      // Add isLiked and isWatched properties to unwatched fallback content
+      // Add isLiked and isWatched properties
       const unwatchedFallbackWithFlags = unwatchedFallbackContent.map(
         (content) => ({
           ...content,
           isLiked: likedContentIds.includes(content.id),
-          isWatched: false, // By definition, unwatched content has isWatched = false
+          isWatched: false,
         }),
       );
 
-      // Add isLiked and isWatched properties to watched fallback content
       const watchedFallbackWithFlags = watchedFallbackContent.map(
         (content) => ({
           ...content,
           isLiked: likedContentIds.includes(content.id),
-          isWatched: true, // By definition, watched content has isWatched = true
+          isWatched: true,
         }),
       );
 
-      // Merge unwatched and watched content, prioritizing unwatched
+      // Merge and paginate content
       const mergedFallbackContent = [
         ...unwatchedFallbackWithFlags,
         ...watchedFallbackWithFlags,
       ];
-
-      // Apply pagination after merging
       const fallbackContent = mergedFallbackContent.slice(skip, skip + take);
 
       return {
@@ -461,22 +538,15 @@ export class ContentService {
         },
         isRelevant: false,
       };
+    } catch (error) {
+      Logger.error(
+        `Error in fallback content retrieval: ${error.message}`,
+        error.stack,
+      );
+      throw error; // Re-throw to be handled by the main method
     }
-
-    // Return the paginated content with pagination metadata
-    return {
-      data: relevantContent,
-      meta: {
-        currentPage: page,
-        itemsPerPage: pageSize,
-        totalItems: totalCount,
-        totalPages: Math.ceil(totalCount / pageSize),
-        hasNextPage: page < Math.ceil(totalCount / pageSize),
-        hasPreviousPage: page > 1,
-      },
-      isRelevant: true,
-    };
   }
+
   /**
    * Creates a "gem" (reward) for a random piece of content that will be awarded to the first user who views it
    * @param points - The number of points the gem is worth
