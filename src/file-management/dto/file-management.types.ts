@@ -1,4 +1,4 @@
-// src/file-management/types/file.types.ts
+export type FileType = 'images' | 'videos';
 
 export interface ProcessedFileResult {
   originalName: string;
@@ -6,7 +6,7 @@ export interface ProcessedFileResult {
   path: string;
   size: number;
   mimeType: string;
+  mediaType: 'IMAGE' | 'VIDEO';
+  posterPath?: string | null;
   versions?: Array<{ quality: string; path: string }>;
 }
-
-export type FileType = 'images' | 'videos';

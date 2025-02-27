@@ -23,14 +23,46 @@ export class ContentService {
     console.log('pre files : ', files);
 
     const result = await this.fileManagementService.saveFiles(files);
-    return result.map((res) => res.path);
+
+    // Transform processed files into structured mediaUrls
+    return result.map((file) => {
+      if (file.mediaType === 'IMAGE') {
+        return {
+          type: 'IMAGE',
+          url: file.path,
+        };
+      } else {
+        return {
+          type: 'VIDEO',
+          url: file.path,
+          poster: file.posterPath || null,
+        };
+      }
+    });
   }
 
   async create(
     files: Array<Express.Multer.File>,
     contentDto: Omit<ContentDto, 'mediaUrls'>,
   ) {
-    const mediaUrls = await this.getMediaUrls(files);
+    const processedFiles = await this.fileManagementService.saveFiles(files);
+
+    // Transform processed files into structured mediaUrls
+    const mediaUrls = processedFiles.map((file) => {
+      if (file.mediaType === 'IMAGE') {
+        return {
+          type: 'IMAGE',
+          url: file.path,
+        };
+      } else {
+        return {
+          type: 'VIDEO',
+          url: file.path,
+          poster: file.posterPath || null,
+        };
+      }
+    });
+
     const { interestIds, ...contentData } = contentDto;
 
     let interests = [];
@@ -218,8 +250,19 @@ export class ContentService {
       },
     });
 
-    // Extract the content IDs into an array
+    // Get all content IDs that the user has already liked
+    const likedContent = await this.prisma.userContentLike.findMany({
+      where: {
+        userId: userId,
+      },
+      select: {
+        contentId: true,
+      },
+    });
+
+    // Extract the content IDs into arrays
     const viewedContentIds = viewedContent.map((item) => item.contentId);
+    const likedContentIds = likedContent.map((item) => item.contentId);
 
     // First, get unwatched content
     const unwatchedContent = await this.prisma.content.findMany({
@@ -281,8 +324,22 @@ export class ContentService {
       },
     });
 
+    // Add isLiked and isWatched properties to unwatched content
+    const unwatchedWithFlags = unwatchedContent.map((content) => ({
+      ...content,
+      isLiked: likedContentIds.includes(content.id),
+      isWatched: false, // By definition, unwatched content has isWatched = false
+    }));
+
+    // Add isLiked and isWatched properties to watched content
+    const watchedWithFlags = watchedContent.map((content) => ({
+      ...content,
+      isLiked: likedContentIds.includes(content.id),
+      isWatched: true, // By definition, watched content has isWatched = true
+    }));
+
     // Merge unwatched and watched content, prioritizing unwatched
-    const mergedContent = [...unwatchedContent, ...watchedContent];
+    const mergedContent = [...unwatchedWithFlags, ...watchedWithFlags];
 
     // Apply pagination after merging
     const relevantContent = mergedContent.slice(skip, skip + take);
@@ -365,10 +422,28 @@ export class ContentService {
         },
       });
 
+      // Add isLiked and isWatched properties to unwatched fallback content
+      const unwatchedFallbackWithFlags = unwatchedFallbackContent.map(
+        (content) => ({
+          ...content,
+          isLiked: likedContentIds.includes(content.id),
+          isWatched: false, // By definition, unwatched content has isWatched = false
+        }),
+      );
+
+      // Add isLiked and isWatched properties to watched fallback content
+      const watchedFallbackWithFlags = watchedFallbackContent.map(
+        (content) => ({
+          ...content,
+          isLiked: likedContentIds.includes(content.id),
+          isWatched: true, // By definition, watched content has isWatched = true
+        }),
+      );
+
       // Merge unwatched and watched content, prioritizing unwatched
       const mergedFallbackContent = [
-        ...unwatchedFallbackContent,
-        ...watchedFallbackContent,
+        ...unwatchedFallbackWithFlags,
+        ...watchedFallbackWithFlags,
       ];
 
       // Apply pagination after merging
@@ -402,193 +477,194 @@ export class ContentService {
       isRelevant: true,
     };
   }
-
-/**
- * Creates a "gem" (reward) for a random piece of content that will be awarded to the first user who views it
- * @param points - The number of points the gem is worth
- */
-async generateGem(points: number) {
-  if (points <= 0) {
-    throw new BadRequestException('Points value must be greater than zero');
-  }
-
-  // Find all valid content
-  const validContent = await this.prisma.content.findMany({
-    where: {
-      endValidationDate: {
-        gte: new Date(),
-      },
-    },
-    select: {
-      id: true,
-      title: true,
-    },
-  });
-
-  if (validContent.length === 0) {
-    throw new BadRequestException('No valid content available for gem generation');
-  }
-
-  // Randomly select a piece of content
-  const randomIndex = Math.floor(Math.random() * validContent.length);
-  const selectedContent = validContent[randomIndex];
-
-  // Check if there's already a gem for this content
-  const existingGem = await this.prisma.contentGem.findUnique({
-    where: {
-      contentId: selectedContent.id,
-    },
-  });
-
-  if (existingGem) {
-    // Update existing gem
-    const updatedGem = await this.prisma.contentGem.update({
-      where: {
-        contentId: selectedContent.id,
-      },
-      data: {
-        points: points,
-        createdAt: new Date(),
-        claimedByUserId: null,
-        claimedAt: null,
-      },
-    });
-
-    return {
-      success: true,
-      message: 'Gem updated successfully',
-      gem: {
-        contentId: updatedGem.contentId,
-        contentTitle: selectedContent.title,
-        points: updatedGem.points,
-      },
-    };
-  } else {
-    // Create new gem
-    const newGem = await this.prisma.contentGem.create({
-      data: {
-        contentId: selectedContent.id,
-        points: points,
-      },
-    });
-
-    return {
-      success: true,
-      message: 'Gem created successfully',
-      gem: {
-        contentId: newGem.contentId,
-        contentTitle: selectedContent.title,
-        points: newGem.points,
-      },
-    };
-  }
-}
-
-/**
- * Modified markAsViewed to check for and claim gems
- */
-async markAsViewed(contentId: string, userId: string) {
-  // Check if both content and user exist at the same time to reduce database calls
-  const [content, user] = await Promise.all([
-    this.prisma.content.findUnique({ where: { id: contentId } }),
-    this.prisma.user.findUnique({ where: { id: userId } }),
-  ]);
-
-  if (!content) {
-    throw new NotFoundException(`Content with ID "${contentId}" not found`);
-  }
-
-  if (!user) {
-    throw new NotFoundException(`User with ID "${userId}" not found`);
-  }
-
-  // Check if user has already viewed this content
-  const existingView = await this.prisma.userContent.findUnique({
-    where: {
-      userId_contentId: { userId, contentId },
-    },
-  });
-
-  // Only award points if it's a new view
-  const shouldAwardPoints = !existingView;
-
-  // Create or update the view record
-  await this.prisma.userContent.upsert({
-    where: {
-      userId_contentId: { userId, contentId },
-    },
-    update: {
-      viewedAt: new Date(),
-    },
-    create: {
-      userId,
-      contentId,
-      viewedAt: new Date(),
-    },
-  });
-
-  let pointsAwarded = 0;
-  let gemClaimed = false;
-  let gemPoints = 0;
-
-  // Award points to user if this is a new view
-  if (shouldAwardPoints) {
-    // Check if there's an unclaimed gem for this content
-    const gem = await this.prisma.contentGem.findFirst({
-      where: {
-        contentId,
-        claimedByUserId: null,
-      },
-    });
-
-    // Base points for viewing content
-    pointsAwarded = 2;
-
-    // If there's a gem, claim it and award additional points
-    if (gem) {
-      gemClaimed = true;
-      gemPoints = gem.points;
-      pointsAwarded += gem.points;
-
-      // Update gem to mark it as claimed
-      await this.prisma.contentGem.update({
-        where: { id: gem.id },
-        data: {
-          claimedByUserId: userId,
-          claimedAt: new Date(),
-        },
-      });
+  /**
+   * Creates a "gem" (reward) for a random piece of content that will be awarded to the first user who views it
+   * @param points - The number of points the gem is worth
+   */
+  async generateGem(points: number) {
+    if (points <= 0) {
+      throw new BadRequestException('Points value must be greater than zero');
     }
 
-    // Update user's points
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        points: {
-          increment: pointsAwarded,
+    // Find all valid content
+    const validContent = await this.prisma.content.findMany({
+      where: {
+        endValidationDate: {
+          gte: new Date(),
         },
+      },
+      select: {
+        id: true,
+        title: true,
       },
     });
 
-    const responseMessage = gemClaimed
-      ? `Content marked as viewed and ${pointsAwarded} points awarded (including ${gemPoints} gem bonus!)`
-      : 'Content marked as viewed and 2 points awarded';
+    if (validContent.length === 0) {
+      throw new BadRequestException(
+        'No valid content available for gem generation',
+      );
+    }
+
+    // Randomly select a piece of content
+    const randomIndex = Math.floor(Math.random() * validContent.length);
+    const selectedContent = validContent[randomIndex];
+
+    // Check if there's already a gem for this content
+    const existingGem = await this.prisma.contentGem.findUnique({
+      where: {
+        contentId: selectedContent.id,
+      },
+    });
+
+    if (existingGem) {
+      // Update existing gem
+      const updatedGem = await this.prisma.contentGem.update({
+        where: {
+          contentId: selectedContent.id,
+        },
+        data: {
+          points: points,
+          createdAt: new Date(),
+          claimedByUserId: null,
+          claimedAt: null,
+        },
+      });
+
+      return {
+        success: true,
+        message: 'Gem updated successfully',
+        gem: {
+          contentId: updatedGem.contentId,
+          contentTitle: selectedContent.title,
+          points: updatedGem.points,
+        },
+      };
+    } else {
+      // Create new gem
+      const newGem = await this.prisma.contentGem.create({
+        data: {
+          contentId: selectedContent.id,
+          points: points,
+        },
+      });
+
+      return {
+        success: true,
+        message: 'Gem created successfully',
+        gem: {
+          contentId: newGem.contentId,
+          contentTitle: selectedContent.title,
+          points: newGem.points,
+        },
+      };
+    }
+  }
+
+  /**
+   * Modified markAsViewed to check for and claim gems
+   */
+  async markAsViewed(contentId: string, userId: string) {
+    // Check if both content and user exist at the same time to reduce database calls
+    const [content, user] = await Promise.all([
+      this.prisma.content.findUnique({ where: { id: contentId } }),
+      this.prisma.user.findUnique({ where: { id: userId } }),
+    ]);
+
+    if (!content) {
+      throw new NotFoundException(`Content with ID "${contentId}" not found`);
+    }
+
+    if (!user) {
+      throw new NotFoundException(`User with ID "${userId}" not found`);
+    }
+
+    // Check if user has already viewed this content
+    const existingView = await this.prisma.userContent.findUnique({
+      where: {
+        userId_contentId: { userId, contentId },
+      },
+    });
+
+    // Only award points if it's a new view
+    const shouldAwardPoints = !existingView;
+
+    // Create or update the view record
+    await this.prisma.userContent.upsert({
+      where: {
+        userId_contentId: { userId, contentId },
+      },
+      update: {
+        viewedAt: new Date(),
+      },
+      create: {
+        userId,
+        contentId,
+        viewedAt: new Date(),
+      },
+    });
+
+    let pointsAwarded = 0;
+    let gemClaimed = false;
+    let gemPoints = 0;
+
+    // Award points to user if this is a new view
+    if (shouldAwardPoints) {
+      // Check if there's an unclaimed gem for this content
+      const gem = await this.prisma.contentGem.findFirst({
+        where: {
+          contentId,
+          claimedByUserId: null,
+        },
+      });
+
+      // Base points for viewing content
+      pointsAwarded = 2;
+
+      // If there's a gem, claim it and award additional points
+      if (gem) {
+        gemClaimed = true;
+        gemPoints = gem.points;
+        pointsAwarded += gem.points;
+
+        // Update gem to mark it as claimed
+        await this.prisma.contentGem.update({
+          where: { id: gem.id },
+          data: {
+            claimedByUserId: userId,
+            claimedAt: new Date(),
+          },
+        });
+      }
+
+      // Update user's points
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          points: {
+            increment: pointsAwarded,
+          },
+        },
+      });
+
+      const responseMessage = gemClaimed
+        ? `Content marked as viewed and ${pointsAwarded} points awarded (including ${gemPoints} gem bonus!)`
+        : 'Content marked as viewed and 2 points awarded';
+
+      return {
+        success: true,
+        message: responseMessage,
+        pointsAwarded,
+        gemClaimed,
+        gemPoints: gemClaimed ? gemPoints : undefined,
+      };
+    }
 
     return {
       success: true,
-      message: responseMessage,
-      pointsAwarded,
-      gemClaimed,
-      gemPoints: gemClaimed ? gemPoints : undefined,
+      message: 'Content marked as viewed',
+      pointsAwarded: 0,
     };
   }
-
-  return {
-    success: true,
-    message: 'Content marked as viewed',
-    pointsAwarded: 0,
-  };
-}
   /**
    * Toggles a like on content - if already liked, removes the like;
    * if not liked, adds a like and awards points

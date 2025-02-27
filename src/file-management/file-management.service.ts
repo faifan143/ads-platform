@@ -8,6 +8,7 @@ import {
   unlink,
   writeFileSync,
   copyFileSync,
+  chmodSync,
 } from 'fs';
 import { extname, join, dirname } from 'path';
 import * as sharp from 'sharp';
@@ -18,20 +19,12 @@ import * as os from 'os';
 import { EventEmitter } from 'events';
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ProcessedFileResult } from './dto/file-management.types';
 
 // Increase default max listeners for all EventEmitter instances
 EventEmitter.defaultMaxListeners = 30;
 
 const unlinkAsync = promisify(unlink);
-
-interface ProcessedFileResult {
-  originalName: string;
-  fileName: string;
-  path: string;
-  size: number;
-  mimeType: string;
-  versions?: Array<{ quality: string; path: string }>;
-}
 
 @Injectable()
 export class FileManagementService {
@@ -189,8 +182,7 @@ export class FileManagementService {
 
         // Set permissions
         try {
-          const fs = require('fs');
-          fs.chmodSync(destinationPath, 0o644);
+          chmodSync(destinationPath, 0o644);
         } catch (chmodError) {
           this.logger.warn(
             `Could not set permissions for ${destinationPath}: ${chmodError.message}`,
@@ -209,21 +201,24 @@ export class FileManagementService {
           path: this.getPublicPath(relativePath),
           size: fileStats.size,
           mimeType: 'image/webp',
+          mediaType: 'IMAGE',
         };
       } else {
-        // Process video and generate HLS files
-        const baseFileName = fileName.replace(/\.[^/.]+$/, '');
-        await this.processVideo(file.path, fileName);
+        // Process video and generate HLS files, including poster image
+        const { videoPath, posterPath } = await this.processVideo(
+          file.path,
+          fileName,
+        );
 
-        // For HLS streaming, return the path to the m3u8 file
+        // Return both the video path and poster path
         return {
           originalName: file.originalname,
           fileName: fileName,
-          path: this.getPublicPath(
-            `videos/converted/${baseFileName}/${baseFileName}.m3u8`,
-          ),
+          path: videoPath,
+          posterPath: posterPath,
           size: file.size,
           mimeType: 'application/x-mpegURL',
+          mediaType: 'VIDEO',
         };
       }
     } catch (error) {
@@ -231,7 +226,6 @@ export class FileManagementService {
       throw error;
     }
   }
-
   // Helper method for file cleanup
   private async cleanupFiles(...filePaths: (string | null | undefined)[]) {
     for (const path of filePaths) {
@@ -245,10 +239,13 @@ export class FileManagementService {
     }
   }
 
+  /**
+   * Updated processVideo method to extract the first frame as a poster image
+   */
   private async processVideo(
     localFilePath: string,
     fileName: string,
-  ): Promise<string> {
+  ): Promise<{ videoPath: string; posterPath: string }> {
     const videoPath = localFilePath;
     const baseFileName = fileName.replace(/\.[^/.]+$/, ''); // Extract base filename
 
@@ -267,6 +264,67 @@ export class FileManagementService {
     );
     if (!existsSync(finalOutputDir)) {
       mkdirSync(finalOutputDir, { recursive: true });
+    }
+
+    // Extract first frame as a poster image
+    const posterFileName = `${baseFileName}_poster.webp`;
+    const posterTempPath = join(tempOutputDir, posterFileName);
+    const finalPosterPath = join(this.projectPath, 'images', posterFileName);
+
+    // Make sure the images directory exists
+    const imagesDir = join(this.projectPath, 'images');
+    if (!existsSync(imagesDir)) {
+      mkdirSync(imagesDir, { recursive: true });
+    }
+
+    // Extract the first frame
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(videoPath)
+          .on('error', (err) => {
+            this.logger.error('Error extracting poster frame:', err);
+            reject(err);
+          })
+          .on('end', () => {
+            this.logger.log('Poster frame extracted successfully');
+            resolve();
+          })
+          .screenshots({
+            timestamps: [0.1], // Take screenshot at 0.1 seconds to avoid black frames
+            filename: posterFileName,
+            folder: tempOutputDir,
+            size: '720x1280', // Match the target video size
+          });
+      });
+
+      // Convert the extracted frame to WebP with proper dimensions
+      if (
+        existsSync(join(tempOutputDir, posterFileName.replace('.webp', '.png')))
+      ) {
+        // If FFmpeg outputs PNG instead of WebP
+        const pngPath = join(
+          tempOutputDir,
+          posterFileName.replace('.webp', '.png'),
+        );
+
+        await sharp(pngPath)
+          .resize({
+            width: 720,
+            height: 1280,
+            fit: 'fill',
+          })
+          .webp({
+            quality: 80,
+            effort: 4,
+          })
+          .toFile(posterTempPath);
+
+        // Clean up the png file
+        await this.cleanupLocalFile(pngPath);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to extract poster frame: ${error.message}`);
+      // Continue with video processing even if poster extraction fails
     }
 
     // Define master playlist path
@@ -413,8 +471,7 @@ export class FileManagementService {
 
         // Set permissions
         try {
-          const fs = require('fs');
-          fs.chmodSync(destPath, 0o644);
+          chmodSync(destPath, 0o644);
         } catch (chmodError) {
           this.logger.warn(
             `Could not set permissions for ${destPath}: ${chmodError.message}`,
@@ -423,6 +480,22 @@ export class FileManagementService {
 
         // Clean up source file
         await this.cleanupLocalFile(sourcePath);
+      }
+
+      // Move the poster image if it was successfully created
+      if (existsSync(posterTempPath)) {
+        copyFileSync(posterTempPath, finalPosterPath);
+
+        // Set permissions
+        try {
+          chmodSync(finalPosterPath, 0o644);
+        } catch (chmodError) {
+          this.logger.warn(
+            `Could not set permissions for ${finalPosterPath}: ${chmodError.message}`,
+          );
+        }
+
+        await this.cleanupLocalFile(posterTempPath);
       }
 
       // Clean up the entire temp directory after all files are moved
@@ -440,9 +513,16 @@ export class FileManagementService {
       }
     }
 
-    return join(finalOutputDir, `${baseFileName}.m3u8`);
+    // Return both the video path and poster path
+    return {
+      videoPath: this.getPublicPath(
+        `videos/converted/${baseFileName}/${baseFileName}.m3u8`,
+      ),
+      posterPath: existsSync(finalPosterPath)
+        ? this.getPublicPath(`images/${posterFileName}`)
+        : null,
+    };
   }
-
   private async processImage(localFilePath: string): Promise<string> {
     const webpPath = `${localFilePath}.webp`;
 
