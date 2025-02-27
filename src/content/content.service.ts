@@ -725,14 +725,17 @@ export class ContentService {
         message: responseMessage,
         pointsAwarded,
         gemClaimed,
-        gemPoints: gemClaimed ? gemPoints : undefined,
+        gemPoints,
       };
     }
 
+    // If content was already viewed before, return with gemClaimed false and gemPoints 0
     return {
       success: true,
       message: 'Content marked as viewed',
       pointsAwarded: 0,
+      gemClaimed: false,
+      gemPoints: 0,
     };
   }
   /**
