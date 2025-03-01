@@ -120,7 +120,12 @@ export class UserService {
           include: {
             content: {
               include: {
-                interests: true,
+                interests: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
               },
             },
           },
