@@ -110,48 +110,54 @@ export class UserService {
     }
   }
 
-
-    async getUserProfile(userId: string) {
+  async getUserProfile(userId: string) {
     // Fetch the user with all related information
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: {
         interests: true,
-        contents: {
-          include: {
-            interests: true,
-          },
-          orderBy: {
-            createdAt: 'desc',
-          },
-        },
-        likes: {
+        viewedAds: {
           include: {
             content: {
               include: {
                 interests: true,
-                owner: true,
               },
             },
           },
           orderBy: {
-            createdAt: 'desc',
+            viewedAt: 'desc',
           },
         },
-        whatsappShares: {
+        UserContentLike: {
           include: {
             content: true,
           },
           orderBy: {
-            createdAt: 'desc',
+            likedAt: 'desc',
           },
         },
-        productPurchases: {
+        UserContentWhatsApp: {
+          include: {
+            content: true,
+          },
+          orderBy: {
+            whatsappedAt: 'desc',
+          },
+        },
+        ProductPurchase: {
           include: {
             product: true,
           },
           orderBy: {
             purchasedAt: 'desc',
+          },
+        },
+        claimedGems: {
+          include: {
+            content: true,
+          },
+          orderBy: {
+            claimedAt: 'desc',
           },
         },
       },
@@ -162,31 +168,59 @@ export class UserService {
     }
 
     // Calculate stats
-    const totalContents = user.contents.length;
-    const totalViews = user.contents.reduce((sum, content) => sum + content.viewsCount, 0);
-    const totalClicks = user.contents.reduce((sum, content) => sum + content.clicksCount, 0);
+    const totalViewedAds = user.viewedAds.length;
+
+    // Count ads that the user has created (ownerNumber matches user.phone)
+    const createdAdsCount = await this.prisma.content.count({
+      where: {
+        ownerNumber: user.phone,
+      },
+    });
+
+    // Get the contents created by this user
+    const createdContents = await this.prisma.content.findMany({
+      where: {
+        ownerNumber: user.phone,
+      },
+      include: {
+        interests: true,
+        gem: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    // Calculate total likes and shares for user's content
     const totalLikes = await this.prisma.userContentLike.count({
       where: {
         content: {
-          ownerId: userId,
-        },
-      },
-    });
-    const totalShares = await this.prisma.userContentWhatsApp.count({
-      where: {
-        content: {
-          ownerId: userId,
+          ownerNumber: user.phone,
         },
       },
     });
 
-    // Get total earned points from content
-    const earnedPoints = user.contents.reduce((sum, content) => sum + content.rewards, 0);
-    
+    const totalShares = await this.prisma.userContentWhatsApp.count({
+      where: {
+        content: {
+          ownerNumber: user.phone,
+        },
+      },
+    });
+
+    // Calculate views on user's content
+    const totalViews = await this.prisma.userContent.count({
+      where: {
+        content: {
+          ownerNumber: user.phone,
+        },
+      },
+    });
+
     // Get spent points from product purchases
-    const spentPoints = user.productPurchases.reduce(
-      (sum, purchase) => sum + purchase.product.pointsPrice,
-      0
+    const spentPoints = user.ProductPurchase.reduce(
+      (sum, purchase) => sum + purchase.pointsSpent,
+      0,
     );
 
     // Return structured profile data
@@ -194,58 +228,61 @@ export class UserService {
       user: {
         id: user.id,
         name: user.name,
-        email: user.email,
         phone: user.phone,
         gender: user.gender,
-        birthDate: user.birthDate,
+        dateOfBirth: user.dateOfBirth,
+        providence: user.providence,
         points: user.points,
-        role: user.role,
+        adsPerMonth: user.adsPerMonth,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       },
       stats: {
-        totalContents,
+        viewedAdsCount: totalViewedAds,
+        createdAdsCount,
         totalViews,
-        totalClicks,
         totalLikes,
         totalShares,
-        earnedPoints,
         spentPoints,
         currentPoints: user.points,
       },
       interests: user.interests,
-      contents: user.contents.map(content => ({
+      createdContents: createdContents.map((content) => ({
         id: content.id,
         title: content.title,
         description: content.description,
         type: content.type,
-        imageUrl: content.imageUrl,
-        videoUrl: content.videoUrl,
-        viewsCount: content.viewsCount,
-        clicksCount: content.clicksCount,
-        rewards: content.rewards,
-        active: content.active,
-        approved: content.approved,
-        createdAt: content.createdAt,
+        mediaUrls: content.mediaUrls,
+        intervalHours: content.intervalHours,
+        endValidationDate: content.endValidationDate,
         interests: content.interests,
+        hasGem: !!content.gem,
+        gemPoints: content.gem?.points || 0,
+        createdAt: content.createdAt,
       })),
-      likedContents: user.likes.map(like => ({
+      viewedAds: user.viewedAds.map((viewed) => ({
+        id: viewed.content.id,
+        title: viewed.content.title,
+        description: viewed.content.description,
+        type: viewed.content.type,
+        mediaUrls: viewed.content.mediaUrls,
+        viewedAt: viewed.viewedAt,
+      })),
+      likedContents: user.UserContentLike.map((like) => ({
         id: like.content.id,
         title: like.content.title,
         description: like.content.description,
-        imageUrl: like.content.imageUrl,
-        owner: {
-          id: like.content.owner.id,
-          name: like.content.owner.name,
-        },
-        likedAt: like.createdAt,
+        mediaUrls: like.content.mediaUrls,
+        ownerName: like.content.ownerName,
+        likedAt: like.likedAt,
       })),
-      sharedContents: user.whatsappShares.map(share => ({
+      sharedContents: user.UserContentWhatsApp.map((share) => ({
         id: share.content.id,
         title: share.content.title,
-        sharedAt: share.createdAt,
+        mediaUrls: share.content.mediaUrls,
+        whatsappedAt: share.whatsappedAt,
       })),
-      purchases: user.productPurchases.map(purchase => ({
+      purchases: user.ProductPurchase.map((purchase) => ({
         id: purchase.id,
         product: {
           id: purchase.product.id,
@@ -253,9 +290,15 @@ export class UserService {
           photo: purchase.product.photo,
           pointsPrice: purchase.product.pointsPrice,
         },
+        pointsSpent: purchase.pointsSpent,
         purchasedAt: purchase.purchasedAt,
+      })),
+      claimedGems: user.claimedGems.map((gem) => ({
+        id: gem.id,
+        points: gem.points,
+        contentTitle: gem.content.title,
+        claimedAt: gem.claimedAt,
       })),
     };
   }
-
 }
